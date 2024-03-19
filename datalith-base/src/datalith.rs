@@ -197,6 +197,12 @@ async fn initial_db_or_fetch_information(
         let schema_sql = include_str!("sql/schema.sql");
 
         for sql in schema_sql.split(";\n") {
+            let sql = sql.trim();
+            
+            if sql.is_empty() {
+                continue;
+            }
+            
             sqlx::query(sql).execute(&mut *tx).await?;
         }
 
