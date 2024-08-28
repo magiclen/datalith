@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::{guard::OpenGuard, Datalith};
 
-/// To represent the file retrieved from MongoDB.
+/// A struct that represents a file.
 #[derive(Debug, Educe)]
 #[educe(PartialEq, Eq)]
 pub struct DatalithFile {
@@ -36,17 +36,17 @@ pub struct DatalithFile {
 
 impl DatalithFile {
     /// Create a file instance.
-    pub(crate) async fn new<TzC: TimeZone>(
+    #[inline]
+    pub(crate) fn new<Tz: TimeZone>(
         datalith: Datalith,
         guard: OpenGuard,
         id: impl Into<Uuid>,
-        created_at: DateTime<TzC>,
+        created_at: DateTime<Tz>,
         file_size: impl Into<u64>,
         file_type: Mime,
         file_name: impl Into<String>,
     ) -> Self
-    where
-        DateTime<TzC>: Copy, {
+where {
         let id = id.into();
 
         Self {
@@ -108,6 +108,7 @@ impl DatalithFile {
     }
 }
 
+/// A struct that provides an asynchronous read interface for files.
 #[derive(Debug)]
 pub struct DatalithFileReader<'a> {
     _file: &'a DatalithFile,

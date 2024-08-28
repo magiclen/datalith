@@ -1,6 +1,7 @@
 use std::{
     ops::Deref,
     sync::atomic::{AtomicBool, Ordering},
+    thread,
     time::Duration,
 };
 
@@ -79,6 +80,22 @@ impl MagicCookiePool {
             }
 
             time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    pub(crate) fn acquire_cookie_sync(&self) -> MagicCookie {
+        loop {
+            for (using, cookie) in self.cookies.iter() {
+                if using.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
+                {
+                    return MagicCookie {
+                        using,
+                        cookie,
+                    };
+                }
+            }
+
+            thread::sleep(Duration::from_millis(10));
         }
     }
 }
