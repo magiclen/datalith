@@ -1,17 +1,27 @@
 #[cfg(feature = "magic")]
 use std::str::FromStr;
-use std::{io, io::ErrorKind, path::Path};
+use std::{
+    io,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
+use chrono::{DateTime, TimeZone};
 use mime::Mime;
 #[cfg(feature = "magic")]
 use once_cell::sync::Lazy;
 use rand::Rng;
 use sha2::{Digest, Sha256};
+#[cfg(feature = "magic")]
+use tokio::task;
 use tokio::{
     fs,
     fs::File,
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
 };
+use trim_in_place::TrimInPlace;
 
 #[cfg(feature = "magic")]
 use crate::magic_cookie_pool::MagicCookiePool;
@@ -44,16 +54,24 @@ pub(crate) async fn detect_file_type_by_buffer(_file_data: impl AsRef<[u8]>) -> 
 }
 
 pub(crate) async fn detect_file_type_by_path(
-    file_path: impl AsRef<Path>,
+    file_path: impl Into<PathBuf>,
     detect_using_path: bool,
 ) -> Option<Mime> {
-    let file_path = file_path.as_ref();
+    let file_path = Arc::new(file_path.into());
 
     #[cfg(feature = "magic")]
     if let Some(magic_cookie) = MAGIC_COOKIE.as_ref() {
-        let cookie = magic_cookie.acquire_cookie().await;
+        let file_path = file_path.clone();
 
-        if let Ok(result) = cookie.file(file_path) {
+        let result = task::spawn_blocking(move || {
+            let cookie = magic_cookie.acquire_cookie_sync();
+
+            cookie.file(file_path.as_path())
+        })
+        .await
+        .unwrap();
+
+        if let Ok(result) = result {
             return Mime::from_str(&result).ok();
         }
     }
@@ -65,6 +83,53 @@ pub(crate) async fn detect_file_type_by_path(
             .map(|extension| mime_guess::from_ext(extension).first_or_octet_stream())
     } else {
         None
+    }
+}
+
+#[inline]
+pub(crate) fn get_current_timestamp() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+}
+
+pub(crate) fn get_file_name<Tz: TimeZone>(
+    file_name: impl Into<String>,
+    date_time: DateTime<Tz>,
+    mime_type: &Mime,
+) -> String {
+    let mut file_name = file_name.into();
+
+    file_name.trim_in_place();
+
+    let ext = get_mime_extensions(mime_type);
+
+    if file_name.is_empty() {
+        if let Some(ext) = ext {
+            format!("{}.{}", date_time.timestamp_millis(), ext)
+        } else {
+            date_time.timestamp_millis().to_string()
+        }
+    } else {
+        if Path::new(file_name.as_str()).extension().is_none() {
+            if let Some(ext) = ext {
+                file_name.push('.');
+                file_name.push_str(ext);
+            }
+        }
+
+        file_name
+    }
+}
+
+#[inline]
+fn get_mime_extensions(mime_type: &Mime) -> Option<&'static str> {
+    match mime_type.subtype() {
+        mime::JPEG => Some("jpg"),
+        mime::GIF => Some("gif"),
+        mime::PNG => Some("png"),
+        mime::BMP => Some("bmp"),
+        mime::SVG => Some("svg"),
+        mime::OCTET_STREAM => Some("bin"),
+        _ => mime_guess::get_mime_extensions(mime_type).map(|e| e[0]),
     }
 }
 
@@ -208,4 +273,13 @@ pub(crate) fn get_random_hash() -> [u8; 32] {
     rng.fill(&mut data);
 
     data
+}
+
+#[inline]
+pub(crate) fn allow_not_found_error(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }

@@ -29,6 +29,8 @@ jobs:
           ./configure --enable-hdri --with-webp
           make -j$(nproc)
           sudo make install
+      - run: sudo ldconfig
+        if: runner.os == 'Linux'
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -69,6 +71,8 @@ jobs:
           ./configure --enable-hdri --with-webp
           make -j$(nproc)
           sudo make install
+      - run: sudo ldconfig
+        if: runner.os == 'Linux'
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -109,6 +113,8 @@ jobs:
           ./configure --enable-hdri --with-webp
           make -j$(nproc)
           sudo make install
+      - run: sudo ldconfig
+        if: runner.os == 'Linux'
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:

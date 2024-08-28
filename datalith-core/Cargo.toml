@@ -13,14 +13,15 @@ license = "MIT"
 include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE"]
 
 [dependencies]
-tokio = { version = "1", features = ["fs", "io-util"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros"] }
 
 sqlx = { version = "0.8", features = [ "runtime-tokio", "sqlite", "chrono", "uuid" ] }
+rdb-pagination = { version = "0.2", features = ["sqlite"] }
 
 num_cpus = "1"
 chrono = "0.4"
 
-educe = { version = "0.5", default-features = false, features = ["Debug", "PartialEq", "Eq"] }
+educe = { version = "0.5", default-features = false, features = ["Debug", "Default", "PartialEq", "Eq"] }
 once_cell = { version = "1", optional = true }
 
 sha2 = "0.10"
@@ -32,12 +33,18 @@ fs4 = { version = "0.9", features = ["tokio"] }
 
 uuid = { version = "1", features = [ "v4" ] }
 rand = "0.8"
+trim-in-place = "0.1"
+
+image-convert = { version = "0.18", optional = true }
+rc-u8-reader = { version = "2", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "test-util"] }
 manifest-dir-macros = "0.1"
+lazy-static-include = "3"
 slash-formatter = "3"
 
 [features]
-default = ["magic"]
+default = ["magic", "image-convert"]
 magic = ["dep:magic", "dep:once_cell"]
+image-convert = ["dep:image-convert", "dep:rc-u8-reader"]
