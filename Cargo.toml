@@ -1,3 +1,9 @@
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
 [workspace]
 resolver = "2"
 members = [

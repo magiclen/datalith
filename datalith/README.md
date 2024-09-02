@@ -21,6 +21,8 @@ let mut s = String::new();
 reader.read_to_string(&mut s).await.unwrap();
 
 println!("{s}"); // Hello world!
+
+datalith.close().await;
 ```
 
 #### Get a File
@@ -40,6 +42,8 @@ if let Some(file) = file {
 } else {
     println!("not found");
 }
+
+datalith.close().await;
 ```
 
 #### Put a Temporary File
@@ -53,6 +57,8 @@ let file_id = datalith.put_file_by_buffer_temporarily(b"Hello world!", "plain.tx
 let file = datalith.get_file_by_id(file_id).await.unwrap().unwrap(); // A temporary file can be retrieved using the `get_file_by_id` function only once. After that, it cannot be retrieved again.
 
 // do something
+
+datalith.close().await;
 ```
 
 #### Put an Image
@@ -71,6 +77,8 @@ let thumbnails = image.thumbnails();                   // WebP files (1x, 2x, 3x
 let fallback_thumbnails = image.fallback_thumbnails(); // JPEG or PNG files (1x, 2x, 3x)
 
 // do something
+
+datalith.close().await;
 ```
 
 ## Crates.io

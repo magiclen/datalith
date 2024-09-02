@@ -15,7 +15,8 @@ async fn clear_expired_files() {
     let image = IMAGE_DATA.as_ref();
 
     {
-        let file = datalith.put_file_by_buffer_temporarily(image, "image.png", None).await.unwrap();
+        let file =
+            datalith.put_file_by_buffer_temporarily(image, Some("image.png"), None).await.unwrap();
 
         let file_id = file.id();
 
@@ -44,9 +45,12 @@ async fn clear_untracked_files() {
     {
         let image = IMAGE_DATA.as_ref();
 
-        let id_1 =
-            datalith.put_file_by_buffer_temporarily(image, "image.png", None).await.unwrap().id();
-        let id_2 = datalith.put_file_by_buffer(image, "image.png", None).await.unwrap().id();
+        let id_1 = datalith
+            .put_file_by_buffer_temporarily(image, Some("image.png"), None)
+            .await
+            .unwrap()
+            .id();
+        let id_2 = datalith.put_file_by_buffer(image, Some("image.png"), None).await.unwrap().id();
 
         assert_eq!(0, datalith.clear_untracked_files().await.unwrap());
 

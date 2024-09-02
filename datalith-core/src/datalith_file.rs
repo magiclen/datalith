@@ -1,5 +1,6 @@
 use std::{
     io,
+    ops::Deref,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -17,25 +18,30 @@ use crate::{guard::OpenGuard, Datalith};
 
 /// A struct that represents a file.
 #[derive(Debug, Educe)]
-#[educe(PartialEq, Eq)]
+#[educe(PartialEq, Eq, Hash)]
 pub struct DatalithFile {
-    #[educe(Eq(ignore))]
-    _datalith:  Datalith,
-    #[educe(Eq(ignore))]
-    _guard:     OpenGuard,
-    id:         Uuid,
-    #[educe(Eq(ignore))]
-    created_at: DateTime<Local>,
-    #[educe(Eq(ignore))]
-    file_size:  u64,
-    #[educe(Eq(ignore))]
-    file_type:  Mime,
-    #[educe(Eq(ignore))]
-    file_name:  String,
+    #[educe(Eq(ignore), Hash(ignore))]
+    _datalith:    Datalith,
+    #[educe(Eq(ignore), Hash(ignore))]
+    _guard:       OpenGuard,
+    id:           Uuid,
+    #[educe(Eq(ignore), Hash(ignore))]
+    created_at:   DateTime<Local>,
+    #[educe(Eq(ignore), Hash(ignore))]
+    file_size:    u64,
+    #[educe(Eq(ignore), Hash(ignore))]
+    file_type:    Mime,
+    #[educe(Eq(ignore), Hash(ignore))]
+    file_name:    String,
+    #[educe(Eq(ignore), Hash(ignore))]
+    is_temporary: bool,
+    #[educe(Eq(ignore), Hash(ignore))]
+    is_new:       bool,
 }
 
 impl DatalithFile {
     /// Create a file instance.
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     pub(crate) fn new<Tz: TimeZone>(
         datalith: Datalith,
@@ -45,6 +51,8 @@ impl DatalithFile {
         file_size: impl Into<u64>,
         file_type: Mime,
         file_name: impl Into<String>,
+        is_temporary: bool,
+        is_new: bool,
     ) -> Self
 where {
         let id = id.into();
@@ -57,6 +65,8 @@ where {
             file_size: file_size.into(),
             file_type,
             file_name: file_name.into(),
+            is_temporary,
+            is_new,
         }
     }
 }
@@ -91,6 +101,18 @@ impl DatalithFile {
     pub const fn file_name(&self) -> &String {
         &self.file_name
     }
+
+    /// Check if this file is temporary.
+    #[inline]
+    pub const fn is_temporary(&self) -> bool {
+        self.is_temporary
+    }
+
+    /// Check if this file is a new file.
+    #[inline]
+    pub const fn is_new(&self) -> bool {
+        self.is_new
+    }
 }
 
 impl DatalithFile {
@@ -106,6 +128,19 @@ impl DatalithFile {
             file,
         })
     }
+
+    /// Create a readable .
+    #[inline]
+    pub async fn into_readable(self) -> io::Result<ReadableDatalithFile> {
+        let file_path = self._datalith.get_file_path(self.id).await?;
+
+        let file = File::open(file_path).await?;
+
+        Ok(ReadableDatalithFile {
+            _file: self,
+            file,
+        })
+    }
 }
 
 /// A struct that provides an asynchronous read interface for files.
@@ -116,6 +151,33 @@ pub struct DatalithFileReader<'a> {
 }
 
 impl<'a> AsyncRead for DatalithFileReader<'a> {
+    #[inline]
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.file).poll_read(cx, buf)
+    }
+}
+
+/// A struct that represents a file and provides an asynchronous read interface for files.
+#[derive(Debug)]
+pub struct ReadableDatalithFile {
+    _file: DatalithFile,
+    file:  File,
+}
+
+impl Deref for ReadableDatalithFile {
+    type Target = DatalithFile;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self._file
+    }
+}
+
+impl AsyncRead for ReadableDatalithFile {
     #[inline]
     fn poll_read(
         mut self: Pin<&mut Self>,

@@ -11,8 +11,10 @@ async fn auto_file_extension() {
 
     {
         let id = {
-            let file =
-                datalith.put_file_by_buffer_temporarily(image, "MagicLen", None).await.unwrap();
+            let file = datalith
+                .put_file_by_buffer_temporarily(image, Some("MagicLen"), None)
+                .await
+                .unwrap();
 
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, file.file_type());
@@ -30,7 +32,7 @@ async fn auto_file_extension() {
 
     {
         let id = {
-            let file = datalith.put_file_by_buffer(image, "MagicLen", None).await.unwrap();
+            let file = datalith.put_file_by_buffer(image, Some("MagicLen"), None).await.unwrap();
 
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, file.file_type());
@@ -83,8 +85,15 @@ async fn auto_file_extension() {
         let id = {
             let mut file = File::open(IMAGE_PATH).await.unwrap();
 
-            let file =
-                datalith.put_file_by_reader_temporarily(&mut file, "MagicLen", None).await.unwrap();
+            let file = datalith
+                .put_file_by_reader_temporarily(
+                    &mut file,
+                    Some("MagicLen"),
+                    None,
+                    Some(IMAGE_SIZE as usize),
+                )
+                .await
+                .unwrap();
 
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, file.file_type());
@@ -104,7 +113,10 @@ async fn auto_file_extension() {
         let id = {
             let mut file = File::open(IMAGE_PATH).await.unwrap();
 
-            let file = datalith.put_file_by_reader(&mut file, "MagicLen", None).await.unwrap();
+            let file = datalith
+                .put_file_by_reader(&mut file, Some("MagicLen"), None, Some(IMAGE_SIZE as usize))
+                .await
+                .unwrap();
 
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, file.file_type());
@@ -133,7 +145,7 @@ async fn image_auto_file_extension() {
     {
         let id = {
             let image = datalith
-                .put_image_by_buffer(image, "MagicLen", Some(32), None, None, true)
+                .put_image_by_buffer(image, Some("MagicLen"), Some(32), None, None, true)
                 .await
                 .unwrap();
 
@@ -171,7 +183,15 @@ async fn image_auto_file_extension() {
             let mut file = File::open(IMAGE_PATH).await.unwrap();
 
             let image = datalith
-                .put_image_by_reader(&mut file, "MagicLen", Some(32), None, None, true)
+                .put_image_by_reader(
+                    &mut file,
+                    Some("MagicLen"),
+                    Some(32),
+                    None,
+                    None,
+                    true,
+                    Some(IMAGE_SIZE as usize),
+                )
                 .await
                 .unwrap();
 

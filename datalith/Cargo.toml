@@ -13,7 +13,7 @@ license = "MIT"
 include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE"]
 
 [dependencies]
-datalith-core = { version = "0.1", path = "../datalith-core", default-features = false }
+datalith-core = { version = "0.1", path = "../datalith-core", default-features = false, features = ["manager"] }
 
 clap = { version = "4", features = ["derive", "env"] }
 concat-with = "0.2"
@@ -21,14 +21,19 @@ terminal_size = "0.3"
 
 anyhow = "1"
 
-tracing = "0.1"
-
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros"] }
-tokio-cron-scheduler = "0.11"
+tokio-util = { version = "0.7", features = ["io"] }
 
-rocket = "0.5"
+serde_json = "1"
+url-escape = "0.1"
+byte-unit = { version = "5", features = ["serde"]}
 
-validators = { version = "0.25", default-features = false, features = ["derive", "uuid", "boolean", "rocket"]}
+rocket = { version = "0.5", features = ["uuid"]}
+rocket-multipart-form-data = "0.10"
+rocket-cache-response = "0.6"
+rocket-etag-if-none-match = "0.4"
+
+validators = { version = "0.25", default-features = false, features = ["derive", "boolean", "rocket"]}
 
 [features]
 default = ["magic", "image-convert"]

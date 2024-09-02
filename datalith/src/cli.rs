@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use byte_unit::Byte;
 use clap::{CommandFactory, FromArgMatches, Parser};
 use concat_with::concat_line;
 use terminal_size::terminal_size;
@@ -45,6 +46,11 @@ pub struct CLIArgs {
     #[arg(default_value = ".")]
     #[arg(help = "Assign the root path of the environment. This should be a directory path")]
     pub environment: PathBuf,
+
+    #[arg(long, env = "DATALITH_MAX_FILE_SIZE")]
+    #[arg(default_value = "2 GiB")]
+    #[arg(help = "Assign the maximum file size (in bytes) for each of the uploaded files")]
+    pub max_file_size: Byte,
 
     #[arg(long, env = "DATALITH_TEMPORARY_FILE_LIFESPAN")]
     #[arg(default_value = "60")]

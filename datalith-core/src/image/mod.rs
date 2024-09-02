@@ -2,7 +2,7 @@ mod datalith_image;
 mod datalith_image_errors;
 mod sync;
 
-use std::{path::Path, str::FromStr, sync::atomic::Ordering, time::Duration};
+use std::{collections::HashSet, path::Path, str::FromStr, sync::atomic::Ordering};
 
 use chrono::{DateTime, Local};
 pub use datalith_image::*;
@@ -14,9 +14,9 @@ use image_convert::{
 };
 use mime::Mime;
 use once_cell::sync::Lazy;
-use rand::Rng;
 use rdb_pagination::{prelude::*, Pagination, PaginationOptions, SqlJoin, SqlOrderByComponent};
-use tokio::{io::AsyncRead, task, task::JoinSet, time};
+use regex::Regex;
+use tokio::{io::AsyncRead, task, task::JoinSet};
 use uuid::Uuid;
 
 use crate::{
@@ -26,7 +26,7 @@ use crate::{
     Datalith, DatalithFile, DatalithReadError, FileTypeLevel,
 };
 
-pub(super) static MIME_WEBP: Lazy<Mime> = Lazy::new(|| Mime::from_str("image/webp").unwrap());
+pub static MIME_WEBP: Lazy<Mime> = Lazy::new(|| Mime::from_str("image/webp").unwrap());
 
 /// A struct that defines the ordering options for querying images.
 #[derive(Debug, Clone, Educe, OrderByOptions)]
@@ -103,13 +103,13 @@ impl Datalith {
     }
 }
 
-// Image Upload
+// Upload
 impl Datalith {
     /// Input an image into Datalith using a buffer.
     pub async fn put_image_by_buffer(
         &self,
         buffer: impl Into<Vec<u8>>,
-        file_name: impl Into<String>,
+        file_name: Option<impl Into<String>>,
         max_width: Option<u16>,
         max_height: Option<u16>,
         center_crop: Option<CenterCrop>,
@@ -192,14 +192,14 @@ impl Datalith {
             let created_at = Local::now();
 
             let file_name = if let Some(file_name) = file_name {
-                get_file_name(file_name, created_at, &file_type)
+                get_file_name(Some(file_name), created_at, &file_type)
             } else if let Some(file_name) = file_path.file_name() {
                 file_name.to_string_lossy().into_owned()
             } else {
                 unreachable!();
             };
 
-            (created_at, get_file_name(file_name, created_at, &file_type), None)
+            (created_at, get_file_name(Some(file_name), created_at, &file_type), None)
         };
 
         self.put_image(
@@ -218,24 +218,31 @@ impl Datalith {
     }
 
     /// Input an image into Datalith using a reader.
+    #[allow(clippy::too_many_arguments)]
     #[inline]
     pub async fn put_image_by_reader(
         &self,
         reader: impl AsyncRead + Unpin,
-        file_name: impl Into<String>,
+        file_name: Option<impl Into<String>>,
         max_width: Option<u16>,
         max_height: Option<u16>,
         center_crop: Option<CenterCrop>,
         save_original_file: bool,
+        expected_reader_length: Option<usize>,
     ) -> Result<DatalithImage, DatalithImageWriteError> {
         let temporary_file_path = self.get_temporary_file_path(Uuid::new_v4()).await?;
 
-        get_file_size_by_reader_and_copy_to_file(reader, temporary_file_path.as_path()).await?;
+        get_file_size_by_reader_and_copy_to_file(
+            reader,
+            temporary_file_path.as_path(),
+            expected_reader_length,
+        )
+        .await?;
         let _file_guard = TemporaryFileGuard::new(temporary_file_path.as_path());
 
         self.put_image_by_path(
             temporary_file_path,
-            Some(file_name),
+            file_name,
             max_width,
             max_height,
             center_crop,
@@ -413,12 +420,12 @@ impl Datalith {
                     }
                 };
 
-                let file_name = format!("{file_stem}_{image_multiplier}x.webp");
+                let file_name = format!("{file_stem}@{image_multiplier}x.webp");
 
                 match self
                     .put_file_by_buffer(
                         output.as_slice(),
-                        file_name,
+                        Some(file_name),
                         Some((MIME_WEBP.clone(), FileTypeLevel::Manual)),
                     )
                     .await
@@ -492,7 +499,7 @@ impl Datalith {
                 match self
                     .put_file_by_buffer(
                         output.as_slice(),
-                        file_name,
+                        Some(file_name),
                         Some((file_type, FileTypeLevel::Manual)),
                     )
                     .await
@@ -508,6 +515,25 @@ impl Datalith {
 
             fallback_thumbnails.push(fallback_file);
         }
+
+        let image_stem = {
+            let file_stem = file_stem.trim();
+
+            if file_stem.is_empty() {
+                let image_name = thumbnails.first().unwrap().file_name();
+
+                let image_stem = Path::new(image_name).file_stem().unwrap().to_str().unwrap();
+
+                static RE_STEM: Lazy<Regex> =
+                    Lazy::new(|| Regex::new(r"(.*?)(?:@\d+x)?$").unwrap());
+
+                let captures = RE_STEM.captures(image_stem).unwrap();
+
+                captures.get(1).unwrap().as_str()
+            } else {
+                file_stem
+            }
+        };
 
         let mut tx = match self.0.db.begin().await {
             Ok(tx) => tx,
@@ -525,15 +551,17 @@ impl Datalith {
             #[rustfmt::skip]
             let result = sqlx::query(
                 "
-                    INSERT INTO `images` (`id`, `created_at`, `image_width`, `image_height`, `original_file_id`)
-                        VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO `images` (`id`, `created_at`, `image_stem`, `image_width`, `image_height`, `original_file_id`, `has_alpha_channel`)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                 ",
             )
             .bind(id)
             .bind(created_at.timestamp_millis())
+            .bind(image_stem)
             .bind(image_width)
             .bind(image_height)
             .bind(original_file.as_ref().map(|e| e.id()))
+            .bind(has_alpha_channel)
             .execute(&mut *tx)
             .await;
 
@@ -611,11 +639,13 @@ impl Datalith {
         let image = DatalithImage::new(
             id,
             created_at,
+            image_stem.to_string(),
             image_width,
             image_height,
             original_file,
             thumbnails,
             fallback_thumbnails,
+            has_alpha_channel,
         );
 
         Ok(image)
@@ -700,14 +730,17 @@ impl Datalith {
             return Ok(None);
         }
 
+        #[allow(clippy::type_complexity)]
         #[rustfmt::skip]
-        let row: Option<(DateTime<Local>, u16, u16, Option<Uuid>)> = sqlx::query_as(
+        let row: Option<(DateTime<Local>, String, u16, u16, Option<Uuid>, bool)> = sqlx::query_as(
             "
                 SELECT
                     `created_at`,
+                    `image_stem`,
                     `image_width`,
                     `image_height`,
-                    `original_file_id`
+                    `original_file_id`,
+                    `has_alpha_channel`
                 FROM
                     `images`
                 WHERE
@@ -718,7 +751,15 @@ impl Datalith {
         .fetch_optional(&self.0.db)
         .await?;
 
-        if let Some((created_at, image_width, image_height, original_file_id)) = row {
+        if let Some((
+            created_at,
+            image_stem,
+            image_width,
+            image_height,
+            original_file_id,
+            has_alpha_channel,
+        )) = row
+        {
             let original_file = if let Some(original_file_id) = original_file_id {
                 self.get_file_by_id(original_file_id).await?
             } else {
@@ -755,11 +796,13 @@ impl Datalith {
             let image = DatalithImage::new(
                 image_id,
                 created_at,
+                image_stem,
                 image_width,
                 image_height,
                 original_file,
                 thumbnails,
                 fallback_thumbnails,
+                has_alpha_channel,
             );
 
             Ok(Some(image))
@@ -860,44 +903,23 @@ impl Datalith {
         let image = self.get_image_by_id(id).await?;
 
         if let Some(image) = image {
-            let mut file_ids = Vec::with_capacity(image.thumbnails().len() * 2 + 1);
+            let mut file_ids = HashSet::with_capacity(image.thumbnails().len() * 2 + 1);
 
             for file in image.thumbnails().iter().chain(image.fallback_thumbnails()) {
-                file_ids.push(file.id());
+                file_ids.insert(file.id());
             }
 
             if let Some(original_file) = image.original_file() {
-                file_ids.push(original_file.id());
+                file_ids.insert(original_file.id());
             }
 
             drop(image);
 
             let mut guards: Vec<DeleteGuard> = Vec::with_capacity(file_ids.len());
+            DeleteGuard::acquire_multiple(&mut guards, self.clone(), &file_ids).await;
 
-            {
-                let mut rng = rand::thread_rng();
-
-                'outer: loop {
-                    for file_id in file_ids.iter().copied() {
-                        let guard = match time::timeout(
-                            Duration::from_millis(rng.gen_range(30u64..500)),
-                            self.create_delete_guard_and_wait_for_opening_files(file_id),
-                        )
-                        .await
-                        {
-                            Ok(guard) => guard,
-                            Err(_) => {
-                                guards.clear();
-
-                                continue 'outer;
-                            },
-                        };
-
-                        guards.push(guard?);
-                    }
-
-                    break;
-                }
+            for guard in guards.iter() {
+                self.wait_for_opening_files(guard).await?;
             }
 
             let mut tx = self.0.db.begin().await?;

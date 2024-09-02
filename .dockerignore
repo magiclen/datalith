@@ -1,0 +1,9 @@
+*
+
+!/patches
+!/Cargo.toml
+!/Cargo.lock
+
+!/*/src
+!/*/Cargo.toml
+!/*/Cargo.lock

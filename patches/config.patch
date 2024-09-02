@@ -1,0 +1,9 @@
+@@ -1,5 +1,8 @@
+ /* config/config.h.in.  Generated from configure.ac by autoheader.  */
+ 
++/* Whether hdri is enabled or not */
++#undef HDRI_ENABLE
++
+ /* Define if building universal (internal helper macro) */
+ #undef AC_APPLE_UNIVERSAL_BUILD
+ 
