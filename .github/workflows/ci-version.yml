@@ -25,10 +25,10 @@ jobs:
     name: Test ${{ matrix.toolchain }} on ${{ matrix.os }} (${{ matrix.features }})
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Install libwebp (Linux)
+      - name: Install librsvg2 libwebp (Linux)
         run: |
           sudo apt update
-          sudo apt install libwebp-dev
+          sudo apt install librsvg2-dev libwebp-dev
         if: runner.os == 'Linux'
       - name: Install libwebp (macOS)
         run: |
@@ -40,7 +40,7 @@ jobs:
           wget https://imagemagick.org/archive/ImageMagick.tar.gz
           tar xf ImageMagick.tar.gz
           cd ImageMagick-*
-          ./configure --enable-hdri --with-webp
+          ./configure --enable-hdri --with-rsvg
           make -j$(nproc)
           sudo make install
       - run: sudo ldconfig
@@ -67,10 +67,10 @@ jobs:
     name: Test ${{ matrix.toolchain }} on ${{ matrix.os }} (${{ matrix.features }})
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Install libwebp (Linux)
+      - name: Install librsvg2 libwebp (Linux)
         run: |
           sudo apt update
-          sudo apt install libwebp-dev
+          sudo apt install librsvg2-dev libwebp-dev
         if: runner.os == 'Linux'
       - name: Install libwebp (macOS)
         run: |
@@ -82,7 +82,7 @@ jobs:
           wget https://imagemagick.org/archive/ImageMagick.tar.gz
           tar xf ImageMagick.tar.gz
           cd ImageMagick-*
-          ./configure --enable-hdri --with-webp
+          ./configure --enable-hdri --with-rsvg
           make -j$(nproc)
           sudo make install
       - run: sudo ldconfig
