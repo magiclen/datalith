@@ -1,3 +1,5 @@
+#[cfg(feature = "image-convert")]
+use std::collections::HashSet;
 use std::{fs, path::PathBuf, time::Duration};
 
 use tokio::time;
@@ -98,8 +100,8 @@ impl OpenGuard {
 
 #[derive(Debug)]
 pub(crate) struct DeleteGuard {
-    _datalith: Datalith,
-    id:        Uuid,
+    _datalith:     Datalith,
+    pub(crate) id: Uuid,
 }
 
 impl Drop for DeleteGuard {
@@ -132,6 +134,48 @@ impl DeleteGuard {
             _datalith: datalith,
             id,
         }
+    }
+
+    #[cfg(feature = "image-convert")]
+    #[inline]
+    pub async fn acquire_multiple(guards: &mut Vec<Self>, datalith: Datalith, ids: &HashSet<Uuid>) {
+        while !Self::acquire_multiple_immediately(guards, datalith.clone(), ids).await {
+            time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[cfg(feature = "image-convert")]
+    pub async fn acquire_multiple_immediately(
+        guards: &mut Vec<Self>,
+        datalith: Datalith,
+        ids: &HashSet<Uuid>,
+    ) -> bool {
+        let mut deleting_files = datalith.0._deleting_files.lock().unwrap();
+        let mut buffer = Vec::with_capacity(ids.len());
+
+        for id in ids {
+            if deleting_files.contains(id) {
+                // there is a lock cannot be acquired
+
+                // rollback
+                for id in buffer {
+                    deleting_files.remove(id);
+                }
+
+                return false;
+            } else {
+                deleting_files.insert(*id);
+                buffer.push(id);
+            }
+        }
+
+        for id in ids {
+            guards.push(Self {
+                _datalith: datalith.clone(), id: *id
+            })
+        }
+
+        true
     }
 }
 

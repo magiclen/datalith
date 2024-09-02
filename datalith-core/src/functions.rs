@@ -27,7 +27,7 @@ use trim_in_place::TrimInPlace;
 use crate::magic_cookie_pool::MagicCookiePool;
 
 /// The buffer size used when reading a file.
-const BUFFER_SIZE: usize = 4096;
+const BUFFER_SIZE: usize = 64 * 1024;
 
 #[cfg(feature = "magic")]
 static MAGIC_COOKIE: Lazy<Option<MagicCookiePool>> =
@@ -92,15 +92,21 @@ pub(crate) fn get_current_timestamp() -> i64 {
 }
 
 pub(crate) fn get_file_name<Tz: TimeZone>(
-    file_name: impl Into<String>,
+    file_name: Option<impl Into<String>>,
     date_time: DateTime<Tz>,
     mime_type: &Mime,
 ) -> String {
-    let mut file_name = file_name.into();
+    let mut file_name = if let Some(file_name) = file_name {
+        let mut file_name = file_name.into();
 
-    file_name.trim_in_place();
+        file_name.trim_in_place();
 
-    let ext = get_mime_extensions(mime_type);
+        file_name
+    } else {
+        String::new()
+    };
+
+    let ext = get_mime_extension(mime_type);
 
     if file_name.is_empty() {
         if let Some(ext) = ext {
@@ -121,7 +127,7 @@ pub(crate) fn get_file_name<Tz: TimeZone>(
 }
 
 #[inline]
-fn get_mime_extensions(mime_type: &Mime) -> Option<&'static str> {
+fn get_mime_extension(mime_type: &Mime) -> Option<&'static str> {
     match mime_type.subtype() {
         mime::JPEG => Some("jpg"),
         mime::GIF => Some("gif"),
@@ -129,7 +135,30 @@ fn get_mime_extensions(mime_type: &Mime) -> Option<&'static str> {
         mime::BMP => Some("bmp"),
         mime::SVG => Some("svg"),
         mime::OCTET_STREAM => Some("bin"),
-        _ => mime_guess::get_mime_extensions(mime_type).map(|e| e[0]),
+        _ => match mime_type.essence_str() {
+            "image/webp" => Some("webp"),
+            "image/heic" => Some("heic"),
+            "application/vnd.rar" | "application/x-rar" => Some("rar"),
+            "application/x-iso9660-image" => Some("iso"),
+            "application/x-ms-installer" | "application/x-msi" => Some("msi"),
+            _ => mime_guess::get_mime_extensions(mime_type).map(|e| e[0]),
+        },
+    }
+}
+
+#[cfg(feature = "image-convert")]
+/// Get an image extension for a given Mime.
+///
+/// This function allows you to generate a file name based on `image_stem` and `file_type`.
+#[inline]
+pub fn get_image_extension(mime_type: &Mime) -> Option<&'static str> {
+    match mime_type.subtype() {
+        mime::JPEG => Some("jpg"),
+        mime::PNG => Some("png"),
+        _ => match mime_type.essence_str() {
+            "image/webp" => Some("webp"),
+            _ => None,
+        },
     }
 }
 
@@ -137,10 +166,11 @@ pub(crate) async fn get_hash_by_path(file_path: impl AsRef<Path>) -> io::Result<
     let file_path = file_path.as_ref();
 
     let mut file = File::open(file_path).await?;
+    let expected_file_size = file.metadata().await?.len();
 
     let mut hasher = Sha256::new();
 
-    let mut buffer = [0; BUFFER_SIZE];
+    let mut buffer = vec![0; calculate_buffer_size(Some(expected_file_size as usize))];
 
     loop {
         let c = file.read(&mut buffer).await?;
@@ -169,12 +199,13 @@ pub(crate) fn get_hash_by_buffer(buffer: impl AsRef<[u8]>) -> [u8; 32] {
 pub(crate) async fn get_file_size_by_reader_and_copy_to_file(
     mut reader: impl AsyncRead + Unpin,
     file_path: impl AsRef<Path>,
+    expected_reader_length: Option<usize>,
 ) -> io::Result<u64> {
     let file_path = file_path.as_ref();
 
     let mut file = File::create(file_path).await?;
 
-    let mut buffer = [0; BUFFER_SIZE];
+    let mut buffer = vec![0; calculate_buffer_size(expected_reader_length)];
     let mut file_size = 0u64;
 
     // copy the data and calculate the hash value
@@ -217,13 +248,14 @@ pub(crate) async fn get_file_size_by_reader_and_copy_to_file(
 pub(crate) async fn get_file_size_and_hash_by_reader_and_copy_to_file(
     mut reader: impl AsyncRead + Unpin,
     file_path: impl AsRef<Path>,
+    expected_reader_length: Option<usize>,
 ) -> io::Result<(u64, [u8; 32])> {
     let file_path = file_path.as_ref();
 
     let mut hasher = Sha256::new();
     let mut file = File::create(file_path).await?;
 
-    let mut buffer = [0; BUFFER_SIZE];
+    let mut buffer = vec![0; calculate_buffer_size(expected_reader_length)];
     let mut file_size = 0u64;
 
     // copy the data and calculate the hash value
@@ -267,7 +299,7 @@ pub(crate) async fn get_file_size_and_hash_by_reader_and_copy_to_file(
 
 #[inline]
 pub(crate) fn get_random_hash() -> [u8; 32] {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rngs::OsRng;
     let mut data = [0u8; 32];
 
     rng.fill(&mut data);
@@ -281,5 +313,14 @@ pub(crate) fn allow_not_found_error(result: io::Result<()>) -> io::Result<()> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
+    }
+}
+
+#[inline]
+pub(crate) fn calculate_buffer_size(expected_length: Option<usize>) -> usize {
+    if let Some(expected_length) = expected_length {
+        expected_length.clamp(64, BUFFER_SIZE)
+    } else {
+        BUFFER_SIZE
     }
 }

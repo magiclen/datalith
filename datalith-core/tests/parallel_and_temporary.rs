@@ -14,10 +14,10 @@ async fn parallel_and_temporary() {
 
     {
         let (file_1, file_2, file_3, file_4) = tokio::join!(
-            datalith.put_file_by_buffer_temporarily(image, "image.png", None),
-            datalith.put_file_by_buffer_temporarily(image, "image.png", None),
-            datalith.put_file_by_buffer(image, "image.png", None),
-            datalith.put_file_by_buffer(image, "image.png", None),
+            datalith.put_file_by_buffer_temporarily(image, Some("image.png"), None),
+            datalith.put_file_by_buffer_temporarily(image, Some("image.png"), None),
+            datalith.put_file_by_buffer(image, Some("image.png"), None),
+            datalith.put_file_by_buffer(image, Some("image.png"), None),
         );
 
         let file_1 = file_1.unwrap();
@@ -66,12 +66,88 @@ async fn parallel_and_temporary() {
         let (delete_result_1, delete_result_2, delete_result_3_4) = tokio::join!(
             datalith.delete_file_by_id(id_1),
             datalith.delete_file_by_id(id_2),
-            datalith.delete_file_by_id(id_3_4)
+            datalith.delete_file_by_id(id_3_4),
         );
 
         assert!(!delete_result_1.unwrap());
         assert!(!delete_result_2.unwrap());
         assert!(!delete_result_3_4.unwrap());
+    }
+
+    datalith_close(datalith).await;
+}
+
+#[tokio::test]
+async fn resource_parallel_and_temporary() {
+    let datalith = datalith_init().await;
+
+    let image = IMAGE_DATA.as_ref();
+
+    {
+        let (resource_1, resource_2, resource_3, resource_4) = tokio::join!(
+            datalith.put_resource_by_buffer_temporarily(image, Some("image.png"), None),
+            datalith.put_resource_by_buffer_temporarily(image, Some("image.png"), None),
+            datalith.put_resource_by_buffer(image, Some("image.png"), None),
+            datalith.put_resource_by_buffer(image, Some("image.png"), None),
+        );
+
+        let resource_1 = resource_1.unwrap();
+        let resource_2 = resource_2.unwrap();
+        let resource_3 = resource_3.unwrap();
+        let resource_4 = resource_4.unwrap();
+
+        assert_ne!(resource_1, resource_2);
+        assert_ne!(resource_1, resource_3);
+        assert_ne!(resource_2, resource_3);
+        assert_ne!(resource_3, resource_4);
+
+        let (file_ids, _) = datalith.list_resource_ids(PaginationOptions::default()).await.unwrap();
+        assert_eq!(4, file_ids.len());
+
+        let (id_1, id_2, id_3, id_4) =
+            (resource_1.id(), resource_2.id(), resource_3.id(), resource_4.id());
+
+        let (delete_result_1, delete_result_2, delete_result_3, delete_result_4) = tokio::join!(
+            time::timeout(Duration::from_secs(1), datalith.delete_resource_by_id(id_1)),
+            time::timeout(Duration::from_secs(1), datalith.delete_resource_by_id(id_2)),
+            time::timeout(Duration::from_secs(1), datalith.delete_resource_by_id(id_3)),
+            time::timeout(Duration::from_secs(1), datalith.delete_resource_by_id(id_4)),
+        );
+
+        // timeout errors will be thrown
+        assert!(delete_result_1.is_err());
+        assert!(delete_result_2.is_err());
+        // 3 or 4 will be deleted successfully because they are the same file and the **count** is 2. After deleting, the count will be updated to 1
+        assert!(delete_result_3.is_err() ^ delete_result_4.is_err());
+
+        drop(resource_1);
+        drop(resource_2);
+        drop(resource_3);
+        drop(resource_4);
+
+        let (delete_result_1, delete_result_2, delete_result_3, delete_result_4) = tokio::join!(
+            datalith.delete_resource_by_id(id_1),
+            datalith.delete_resource_by_id(id_2),
+            datalith.delete_resource_by_id(id_3),
+            datalith.delete_resource_by_id(id_4),
+        );
+
+        assert!(delete_result_1.unwrap());
+        assert!(delete_result_2.unwrap());
+        // 3 or 4 will be deleted successfully because one of them is already deleted
+        assert!(delete_result_3.unwrap() ^ delete_result_4.unwrap());
+
+        let (delete_result_1, delete_result_2, delete_result_3, delete_result_4) = tokio::join!(
+            datalith.delete_resource_by_id(id_1),
+            datalith.delete_resource_by_id(id_2),
+            datalith.delete_resource_by_id(id_3),
+            datalith.delete_resource_by_id(id_4),
+        );
+
+        assert!(!delete_result_1.unwrap());
+        assert!(!delete_result_2.unwrap());
+        assert!(!delete_result_3.unwrap());
+        assert!(!delete_result_4.unwrap());
     }
 
     datalith_close(datalith).await;
@@ -86,9 +162,30 @@ async fn image_parallel() {
 
     {
         let (image_1, image_2, image_3) = tokio::join!(
-            datalith.put_image_by_buffer(image.to_vec(), "image.png", Some(32), None, None, true),
-            datalith.put_image_by_buffer(image.to_vec(), "image.png", Some(32), None, None, true),
-            datalith.put_image_by_buffer(image.to_vec(), "image.png", Some(48), None, None, true),
+            datalith.put_image_by_buffer(
+                image.to_vec(),
+                Some("image.png"),
+                Some(32),
+                None,
+                None,
+                true
+            ),
+            datalith.put_image_by_buffer(
+                image.to_vec(),
+                Some("image.png"),
+                Some(32),
+                None,
+                None,
+                true
+            ),
+            datalith.put_image_by_buffer(
+                image.to_vec(),
+                Some("image.png"),
+                Some(48),
+                None,
+                None,
+                true
+            ),
         );
 
         let image_1 = image_1.unwrap();
@@ -112,8 +209,8 @@ async fn image_parallel() {
         let id_3 = image_3.id();
 
         let (delete_result_1, delete_result_2, delete_result_3) = tokio::join!(
-            time::timeout(Duration::from_secs(3), datalith.delete_image_by_id(id_1)),
-            time::timeout(Duration::from_secs(3), datalith.delete_image_by_id(id_2)),
+            time::timeout(Duration::from_secs(5), datalith.delete_image_by_id(id_1)),
+            time::timeout(Duration::from_secs(5), datalith.delete_image_by_id(id_2)),
             time::timeout(Duration::from_secs(1), datalith.delete_image_by_id(id_3)),
         );
 

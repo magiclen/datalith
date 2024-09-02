@@ -1,0 +1,23 @@
+services:
+  app:
+    restart: always
+    build:
+      context: .
+      dockerfile: Dockerfile.image
+    image: datalith
+    container_name: datalith
+    environment:
+      TZ: Asia/Taipei
+      DATALITH_MAX_FILE_SIZE: 2 GiB
+      DATALITH_TEMPORARY_FILE_LIFESPAN: 60
+      DATALITH_MAX_IMAGE_RESOLUTION: 50000000
+      DATALITH_MAX_IMAGE_RESOLUTION_MULTIPLIER: 3
+    volumes:
+      - ~/docker/datalith:/app/shared
+    ports:
+      - "1111:1111"
+    command: --environment /app/shared/db
+    logging:
+      driver: "syslog"
+      options:
+        tag: "docker/{{.ImageName}}/{{.Name}}"

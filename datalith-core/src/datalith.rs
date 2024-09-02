@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -53,6 +53,7 @@ pub const PATH_FILE_DIRECTORY: &str = "datalith.files";
 const DATABASE_VERSION: u32 = 1;
 const TABLE_DB_INFORMATION: &str = "sys_db_information";
 
+const FILE_READ_BUFFER_SIZE: usize = 64 * 1024;
 const TEMPORARY_FILE_LIFESPAN: Duration = Duration::from_secs(60);
 
 #[cfg(feature = "image-convert")]
@@ -92,6 +93,7 @@ pub(crate) struct DatalithInner {
     pub(crate) _opening_files:                   Mutex<HashMap<Uuid, usize>>,
     pub(crate) _deleting_files:                  Mutex<HashSet<Uuid>>,
     _sql_file:                                   File,
+    pub(crate) _file_read_buffer_size:           AtomicUsize,
     pub(crate) _temporary_file_lifespan:         AtomicU64,
     #[cfg(feature = "image-convert")]
     pub(crate) _max_image_resolution:            AtomicU32,
@@ -117,6 +119,22 @@ impl Datalith {
         self.0.environment.as_path()
     }
 
+    /// Retrieve the size of the file read buffer.
+    #[inline]
+    pub fn get_file_read_buffer_size(&self) -> usize {
+        self.0._file_read_buffer_size.load(Ordering::Relaxed)
+    }
+
+    /// Set the size (in bytes) of the file read buffer.
+    ///
+    /// The minimum size is **512 KiB**. The maximum size is **64 MiB**.
+    #[inline]
+    pub fn set_file_read_buffer_size(&self, mut size: usize) {
+        size = size.clamp(512 * 1024, 64 * 1024 * 1024);
+
+        self.0._file_read_buffer_size.swap(size, Ordering::Relaxed);
+    }
+
     /// Retrieve the lifespan for each of the uploaded temporary files.
     #[inline]
     pub fn get_temporary_file_lifespan(&self) -> Duration {
@@ -127,7 +145,7 @@ impl Datalith {
 
     /// Set the lifespan for each of the uploaded temporary files.
     ///
-    /// The minimum lifespan is **100 milliseconds**. The maximum lifespan is **10000 hours**
+    /// The minimum lifespan is **100 milliseconds**. The maximum lifespan is **10000 hours**.
     #[inline]
     pub fn set_temporary_file_lifespan(&self, mut temporary_file_lifespan: Duration) {
         const ONE_TENTH_SECOND: Duration = Duration::from_millis(100);
@@ -195,7 +213,7 @@ impl Datalith {
 
 // UP / Down
 impl Datalith {
-    /// Create a Datalith file manager.
+    /// Create a Datalith file storage center.
     pub async fn new(environment_path: impl AsRef<Path>) -> Result<Self, DatalithCreateError> {
         let environment_path_ref = environment_path.as_ref();
 
@@ -273,6 +291,9 @@ impl Datalith {
             _opening_files:                                                     opening_files,
             _deleting_files:                                                    deleting_files,
             _sql_file:                                                          sql_file,
+            _file_read_buffer_size:                                             AtomicUsize::new(
+                FILE_READ_BUFFER_SIZE,
+            ),
             _temporary_file_lifespan:                                           AtomicU64::new(
                 TEMPORARY_FILE_LIFESPAN.as_millis() as u64,
             ),
@@ -451,13 +472,13 @@ impl Datalith {
         Ok(false)
     }
 
-    /// Close the Datalith file manager.
+    /// Close the Datalith file storage center.
     #[inline]
     pub async fn close(self) {
         self.0.db.close().await;
     }
 
-    /// Close the Datalith file manager and remove the entire database and associated files.
+    /// Close the Datalith file storage center and remove the entire database and associated files.
     #[inline]
     pub async fn drop_datalith(self) -> Result<(), io::Error> {
         self.0.db.close().await;
@@ -487,7 +508,7 @@ impl Datalith {
 }
 
 /// Defines how to handle MIME type comparison when putting files.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum FileTypeLevel {
     /// The detected file type must exactly match the provided file type.
     ExactMatch,
@@ -503,7 +524,7 @@ impl Datalith {
     pub async fn put_file_by_buffer(
         &self,
         buffer: impl AsRef<[u8]>,
-        file_name: impl Into<String>,
+        file_name: Option<impl Into<String>>,
         file_type: Option<(Mime, FileTypeLevel)>,
     ) -> Result<DatalithFile, DatalithWriteError> {
         let file_data = buffer.as_ref();
@@ -539,7 +560,7 @@ impl Datalith {
         &self,
         hash: [u8; 32],
         file_data: &[u8],
-        file_name: impl Into<String>,
+        file_name: Option<impl Into<String>>,
         file_type: Option<(Mime, FileTypeLevel)>,
         temporary: bool,
     ) -> Result<DatalithFile, DatalithWriteError> {
@@ -591,6 +612,8 @@ impl Datalith {
             file_size as u64,
             file_type,
             file_name,
+            expired_at.is_some(),
+            true,
         );
 
         Ok(file)
@@ -653,7 +676,7 @@ impl Datalith {
         })
         .await?;
         let file_name = if let Some(file_name) = file_name {
-            get_file_name(file_name, created_at, &file_type)
+            get_file_name(Some(file_name), created_at, &file_type)
         } else if let Some(file_name) = file_path.file_name() {
             file_name.to_string_lossy().into_owned()
         } else {
@@ -701,6 +724,8 @@ impl Datalith {
             file_size as u64,
             file_type,
             file_name,
+            expired_at.is_some(),
+            true,
         );
 
         Ok(file)
@@ -710,14 +735,16 @@ impl Datalith {
     pub async fn put_file_by_reader(
         &self,
         reader: impl AsyncRead + Unpin,
-        file_name: impl Into<String>,
+        file_name: Option<impl Into<String>>,
         file_type: Option<(Mime, FileTypeLevel)>,
+        expected_reader_length: Option<usize>,
     ) -> Result<DatalithFile, DatalithWriteError> {
         let temporary_file_path = self.get_temporary_file_path(Uuid::new_v4()).await?;
 
         let (file_size, hash) = get_file_size_and_hash_by_reader_and_copy_to_file(
             reader,
             temporary_file_path.as_path(),
+            expected_reader_length,
         )
         .await?;
         let mut file_guard = TemporaryFileGuard::new(temporary_file_path.as_path());
@@ -764,7 +791,7 @@ impl Datalith {
         temporary_file_path: PathBuf,
         file_guard: &mut TemporaryFileGuard,
         file_size: u64,
-        file_name: impl Into<String>,
+        file_name: Option<impl Into<String>>,
         file_type: Option<(Mime, FileTypeLevel)>,
         temporary: bool,
     ) -> Result<DatalithFile, DatalithWriteError> {
@@ -818,6 +845,8 @@ impl Datalith {
             file_size,
             file_type,
             file_name,
+            expired_at.is_some(),
+            true,
         );
 
         Ok(file)
@@ -832,7 +861,7 @@ impl Datalith {
     pub async fn put_file_by_buffer_temporarily(
         &self,
         buffer: impl AsRef<[u8]>,
-        file_name: impl Into<String>,
+        file_name: Option<impl Into<String>>,
         file_type: Option<(Mime, FileTypeLevel)>,
     ) -> Result<DatalithFile, DatalithWriteError> {
         let hash = get_random_hash(); // we can assume this hash will not be duplicated
@@ -860,15 +889,20 @@ impl Datalith {
     pub async fn put_file_by_reader_temporarily(
         &self,
         reader: impl AsyncRead + Unpin,
-        file_name: impl Into<String>,
+        file_name: Option<impl Into<String>>,
         file_type: Option<(Mime, FileTypeLevel)>,
+        expected_reader_length: Option<usize>,
     ) -> Result<DatalithFile, DatalithWriteError> {
         let temporary_file_path = self.get_temporary_file_path(Uuid::new_v4()).await?;
 
         let hash = get_random_hash(); // we can assume this hash will not be duplicated
 
-        let file_size =
-            get_file_size_by_reader_and_copy_to_file(reader, temporary_file_path.as_path()).await?;
+        let file_size = get_file_size_by_reader_and_copy_to_file(
+            reader,
+            temporary_file_path.as_path(),
+            expected_reader_length,
+        )
+        .await?;
         let mut file_guard = TemporaryFileGuard::new(temporary_file_path.as_path());
 
         self.put_file_by_reader_inner(
@@ -911,9 +945,23 @@ impl Datalith {
             let datalith = self.clone();
 
             tasks.spawn(async move {
+                #[rustfmt::skip]
+                sqlx::query(
+                    "
+                        DELETE FROM
+                            `resources`
+                        WHERE
+                            `file_id` = ?
+                    ",
+                )
+                .bind(id)
+                .execute(&datalith.0.db).await?;
+
                 // files are all temporary, so the count should always be 1
                 // we don't need a loop to ensure that if a file is uploaded multiple times, it should be deleted multiple times
-                time::timeout(timeout, datalith.delete_file_by_id(id)).await
+                time::timeout(timeout, datalith.delete_file_by_id(id))
+                    .await
+                    .unwrap_or_else(|_| Ok(false))
             });
         }
 
@@ -921,7 +969,7 @@ impl Datalith {
 
         while let Some(result) = tasks.join_next().await {
             if let Ok(result) = result.unwrap() {
-                if result? {
+                if result {
                     counter += 1;
                 }
             }
@@ -1062,8 +1110,9 @@ impl Datalith {
         if let Some((created_at, file_size, file_type, file_name, expired_at)) = row {
             let created_at = DateTime::from_timestamp_millis(created_at).unwrap();
             let file_type = Mime::from_str(&file_type).unwrap();
+            let is_temporary = expired_at.is_some();
 
-            if expired_at.is_some() {
+            if is_temporary {
                 #[rustfmt::skip]
                 sqlx::query(
                     "
@@ -1089,6 +1138,8 @@ impl Datalith {
                 file_size,
                 file_type,
                 file_name,
+                is_temporary,
+                false,
             );
 
             Ok(Some(file))
@@ -1141,8 +1192,9 @@ impl Datalith {
 
             let created_at = DateTime::from_timestamp_millis(created_at).unwrap();
             let file_type = Mime::from_str(&file_type).unwrap();
+            let is_temporary = expired_at.is_some();
 
-            if expired_at.is_some() {
+            if is_temporary {
                 #[rustfmt::skip]
                 sqlx::query(
                     "
@@ -1168,6 +1220,8 @@ impl Datalith {
                 file_size,
                 file_type,
                 file_name,
+                is_temporary,
+                false,
             );
 
             Ok(Some(file))
@@ -1267,18 +1321,18 @@ impl Datalith {
     pub async fn delete_file_by_id(&self, id: impl Into<Uuid>) -> Result<bool, DatalithReadError> {
         let id = id.into();
 
-        let guard = self.create_delete_guard_and_wait_for_opening_files(id).await?;
+        let guard = DeleteGuard::new(self.clone(), id).await;
+
+        self.wait_for_opening_files(&guard).await?;
 
         self.delete_file_by_id_inner(id, guard).await
     }
 
-    pub(crate) async fn create_delete_guard_and_wait_for_opening_files(
+    pub(crate) async fn wait_for_opening_files(
         &self,
-        id: impl Into<Uuid>,
-    ) -> Result<DeleteGuard, DatalithReadError> {
-        let id = id.into();
-
-        let guard = DeleteGuard::new(self.clone(), id).await;
+        guard: &DeleteGuard,
+    ) -> Result<(), DatalithReadError> {
+        let id = guard.id;
 
         let multiple = {
             #[rustfmt::skip]
@@ -1315,7 +1369,7 @@ impl Datalith {
             }
         }
 
-        Ok(guard)
+        Ok(())
     }
 
     pub(crate) async fn delete_file_by_id_inner(

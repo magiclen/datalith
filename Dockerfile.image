@@ -1,0 +1,140 @@
+ARG imagemagick_ver=7.1.1-36
+
+FROM rust AS builder
+
+RUN apt update && apt install -y libmagic-dev
+
+RUN apt install -y curl build-essential automake autopoint libtool intltool pkg-config cmake clang
+
+RUN mkdir /imagemagick_build
+
+RUN apt install -y \
+libbz2-dev \
+libdjvulibre-dev \
+libfftw3-dev \
+libfontconfig1-dev \
+libfreetype-dev \
+libgs-dev \
+libgraphviz-dev \
+libheif-dev \
+libjbig-dev \
+libjpeg-dev \
+liblcms2-dev \
+liblqr-1-0-dev \
+liblzma-dev \
+libopenexr-dev \
+libopenjp2-7-dev \
+libpango1.0-dev \
+libpng-dev \
+libraqm-dev \
+libraw-dev \
+librsvg2-dev \
+libtiff-dev \
+libwebp-dev \
+libwmf-dev \
+libxml2-dev \
+libzip-dev \
+zlib1g-dev \
+libzstd-dev \
+ghostscript
+
+WORKDIR /build/ImageMagick
+
+ARG imagemagick_ver
+RUN curl -fL https://github.com/ImageMagick/ImageMagick/archive/refs/tags/${imagemagick_ver}.tar.gz -o imagemagick.tar.gz && tar xzf imagemagick.tar.gz
+
+WORKDIR /build/ImageMagick/ImageMagick-${imagemagick_ver}
+
+COPY patches patches
+
+RUN patch config/config.h.in < patches/config.patch
+RUN patch configure < patches/configure.patch
+
+RUN PKG_CONFIG_PATH="/imagemagick_build/lib/pkgconfig" ./configure \
+--prefix="/imagemagick_build" \
+--disable-static \
+--disable-installed \
+--disable-docs \
+--without-utilities \
+--enable-shared \
+--enable-zero-configuration \
+--enable-hdri \
+--with-fftw \
+--with-gslib \
+--with-rsvg \
+--with-wmf
+
+RUN make -j$(nproc)
+
+RUN make install
+
+RUN cp -r -f /imagemagick_build/include /usr/local && cp -r -f /imagemagick_build/lib /usr/local && ldconfig
+
+WORKDIR /build
+
+COPY . .
+
+RUN cargo build --release
+
+
+FROM debian:bookworm-slim
+
+RUN adduser --disabled-password \
+    --gecos "" \
+    --no-create-home \
+    user
+
+WORKDIR /app
+
+RUN chown user:user /app
+
+RUN apt update && apt install -y libmagic1
+
+RUN apt install -y \
+ghostscript \
+libjbig0 \
+libtiff6 \
+libraqm0 \
+libjpeg62-turbo \
+libgs10 \
+liblqr-1-0 \
+libpng16-16 \
+libpstoedit0c2a \
+libdjvulibre21 \
+libfftw3-bin \
+libfontconfig1 \
+libfreetype6 \
+libheif1 \
+libwebpmux3 \
+libwebpdemux2 \
+libwebp7 \
+libwmflite-0.2-7 \
+libxext6 \
+liblzma5 \
+libbz2-1.0 \
+libopenexr-3-1-30 \
+libopenjp2-7 \
+libpangocairo-1.0-0 \
+libpango-1.0-0 \
+libraw20 \
+liblcms2-2 \
+librsvg2-2 \
+libglib2.0-0 \
+libcairo2 \
+libxml2 \
+libgvc6 \
+libcgraph6 \
+libzip4 \
+libgomp1
+
+RUN rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /imagemagick_build/lib /usr/local/lib/
+
+RUN ldconfig
+
+USER user
+
+COPY --chown=user:user --from=builder /build/target/release/datalith  /app/
+
+ENTRYPOINT ["/app/datalith"]

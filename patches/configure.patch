@@ -1,0 +1,8 @@
+@@ -23387,6 +23387,7 @@
+ else
+     magick_hdri_enable='0'
+ fi
++printf "%s\n" "#define HDRI_ENABLE $magick_hdri_enable" >>confdefs.h
+ MAGICK_PCFLAGS="$MAGICK_PCFLAGS -DMAGICKCORE_HDRI_ENABLE=$magick_hdri_enable"
+ CFLAGS="$CFLAGS -DMAGICKCORE_HDRI_ENABLE=$magick_hdri_enable"
+ CPPFLAGS="$CPPFLAGS -DMAGICKCORE_HDRI_ENABLE=$magick_hdri_enable"
