@@ -84,13 +84,13 @@ impl Datalith {
         self.0._max_image_resolution.swap(resolution, Ordering::Relaxed);
     }
 
-    /// Retrieve the maximum image resolution multiplier (in pixels) for each of the uploaded images.
+    /// Retrieve the maximum image resolution multiplier for each of the uploaded images.
     #[inline]
     pub fn get_max_image_resolution_multiplier(&self) -> u8 {
         self.0._max_image_resolution_multiplier.load(Ordering::Relaxed)
     }
 
-    /// Set the maximum image resolution multiplier (in pixels) for each of the uploaded images.
+    /// Set the maximum image resolution multiplier for each of the uploaded images.
     ///
     /// The minimum resolution multiplier is **1**.
     #[inline]

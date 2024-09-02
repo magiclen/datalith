@@ -1,0 +1,36 @@
+[package]
+name = "datalith"
+version = "0.1.0"
+authors = ["Magic Len <len@magiclen.org>"]
+edition = "2021"
+rust-version = "1.75"
+repository = "https://github.com/magiclen/datalith"
+homepage = "https://magiclen.org/datalith"
+keywords = ["datalith", "sqlite", "storage", "file", "oss"]
+categories = ["filesystem", "database"]
+description = "A file management system powered by SQLite for metadata storage and the file system for file storage."
+license = "MIT"
+include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE"]
+
+[dependencies]
+datalith-core = { version = "0.1", path = "../datalith-core", default-features = false }
+
+clap = { version = "4", features = ["derive", "env"] }
+concat-with = "0.2"
+terminal_size = "0.3"
+
+anyhow = "1"
+
+tracing = "0.1"
+
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros"] }
+tokio-cron-scheduler = "0.11"
+
+rocket = "0.5"
+
+validators = { version = "0.25", default-features = false, features = ["derive", "uuid", "boolean", "rocket"]}
+
+[features]
+default = ["magic", "image-convert"]
+magic = ["datalith-core/magic"]
+image-convert = ["datalith-core/image-convert"]

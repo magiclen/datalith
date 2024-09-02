@@ -125,7 +125,7 @@ impl Datalith {
         Duration::from_millis(milli_secs)
     }
 
-    /// Set the maximum resolution (in pixels) for each of the uploaded images.
+    /// Set the lifespan for each of the uploaded temporary files.
     ///
     /// The minimum lifespan is **100 milliseconds**. The maximum lifespan is **10000 hours**
     #[inline]
