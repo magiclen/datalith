@@ -301,6 +301,7 @@ async fn resource_upload_download_data() {
                 .await
                 .unwrap();
 
+            #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
 
@@ -324,6 +325,7 @@ async fn resource_upload_download_data() {
         {
             let resource = datalith.get_resource_by_id(id).await.unwrap().unwrap();
 
+            #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
 
@@ -351,6 +353,7 @@ async fn resource_upload_download_data() {
             let resource =
                 datalith.put_resource_by_buffer(image, Some("image.png"), None).await.unwrap();
 
+            #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
 
@@ -374,6 +377,7 @@ async fn resource_upload_download_data() {
         {
             let resource = datalith.get_resource_by_id(id).await.unwrap().unwrap();
 
+            #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
 
@@ -406,6 +410,7 @@ async fn resource_upload_download_data() {
                 .await
                 .unwrap();
 
+            #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
 
@@ -429,6 +434,7 @@ async fn resource_upload_download_data() {
         {
             let resource = datalith.get_resource_by_id(id).await.unwrap().unwrap();
 
+            #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
 
@@ -456,6 +462,7 @@ async fn resource_upload_download_data() {
             let resource =
                 datalith.put_resource_by_path(IMAGE_PATH, None::<&str>, None).await.unwrap();
 
+            #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
 
@@ -479,6 +486,7 @@ async fn resource_upload_download_data() {
         {
             let resource = datalith.get_resource_by_id(id).await.unwrap().unwrap();
 
+            #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
 
@@ -518,6 +526,7 @@ async fn resource_upload_download_data() {
                 .await
                 .unwrap();
 
+            #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
 
@@ -541,6 +550,7 @@ async fn resource_upload_download_data() {
         {
             let resource = datalith.get_resource_by_id(id).await.unwrap().unwrap();
 
+            #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
 
@@ -577,6 +587,7 @@ async fn resource_upload_download_data() {
                 .await
                 .unwrap();
 
+            #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
 
@@ -600,6 +611,7 @@ async fn resource_upload_download_data() {
         {
             let resource = datalith.get_resource_by_id(id).await.unwrap().unwrap();
 
+            #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
 

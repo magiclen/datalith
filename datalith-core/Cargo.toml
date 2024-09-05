@@ -53,3 +53,7 @@ default = ["magic", "image-convert", "manager"]
 magic = ["dep:magic", "dep:once_cell"]
 image-convert = ["dep:image-convert", "dep:rc-u8-reader", "dep:regex"]
 manager = ["dep:tokio-cron-scheduler"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
