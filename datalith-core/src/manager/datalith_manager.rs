@@ -31,7 +31,7 @@ impl DatalithManager {
                     Box::pin(async move {
                         match datalith.clear_expired_files(Duration::from_secs(3)).await {
                             Ok(count) => match count {
-                                0 => tracing::info!("no expired file needs to be deleted"),
+                                0 => tracing::debug!("no expired file needs to be deleted"),
                                 1 => tracing::info!("one expired file has been deleted"),
                                 _ => tracing::info!("{count} expired files have been deleted"),
                             },
@@ -54,7 +54,7 @@ impl DatalithManager {
                     Box::pin(async move {
                         match datalith.clear_untracked_files().await {
                             Ok(count) => match count {
-                                0 => tracing::info!("no untracked file needs to be deleted"),
+                                0 => tracing::debug!("no untracked file needs to be deleted"),
                                 1 => tracing::info!("one untracked file has been deleted"),
                                 _ => tracing::info!("{count} untracked files haves been deleted"),
                             },
