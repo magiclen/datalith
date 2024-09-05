@@ -125,7 +125,7 @@ async fn stream_upload(
     };
     let mime_type = content_type.clone().map(|e| (e, FileTypeLevel::Manual));
 
-    let content_length = content_length.map(|e| e.to_usize());
+    let content_length = validate_content_length(server_config, content_length)?;
 
     let temporary = temporary.map(|e| e.0).unwrap_or(false);
 
@@ -170,6 +170,24 @@ async fn delete(datalith: &State<DatalithManager>, id: Uuid) -> Result<&'static 
 #[inline]
 pub fn mounts(rocket: Rocket<Build>) -> Rocket<Build> {
     rocket.mount("/o", routes![upload, stream_upload, delete])
+}
+
+#[inline]
+pub fn validate_content_length(
+    server_config: &State<ServerConfig>,
+    content_length: Option<&ContentLength>,
+) -> Result<Option<usize>, Status> {
+    if let Some(content_length) = content_length {
+        let content_length = content_length.to_usize();
+
+        if content_length > server_config.max_file_size as usize {
+            return Err(Status::PayloadTooLarge);
+        }
+
+        Ok(Some(content_length))
+    } else {
+        Ok(None)
+    }
 }
 
 #[inline]
