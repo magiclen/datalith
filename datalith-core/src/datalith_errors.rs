@@ -94,7 +94,7 @@ impl Error for DatalithReadError {}
 #[derive(Debug)]
 pub enum DatalithWriteError {
     FileTypeInvalid { file_type: Mime, expected_file_type: Mime },
-    Interrupted,
+    FileLengthTooLarge { expected_file_length: u64, actual_file_length: u64 },
     IOError(io::Error),
     SQLError(sqlx::Error),
 }
@@ -133,7 +133,13 @@ impl Display for DatalithWriteError {
             } => f.write_fmt(format_args!(
                 "the file type {file_type:?} is invalid (expect: {expected_file_type:?})"
             )),
-            Self::Interrupted => f.write_str("interrupt"),
+            Self::FileLengthTooLarge {
+                expected_file_length,
+                actual_file_length,
+            } => f.write_fmt(format_args!(
+                "the file length {actual_file_length:?} is larger than the expected one (expect: \
+                 {expected_file_length:?})"
+            )),
             Self::IOError(error) => Display::fmt(error, f),
             Self::SQLError(error) => Display::fmt(error, f),
         }

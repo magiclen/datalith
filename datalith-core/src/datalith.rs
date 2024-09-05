@@ -5,6 +5,7 @@ use std::{
     fmt::{self, Debug, Formatter},
     future::Future,
     io,
+    io::ErrorKind,
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
@@ -19,6 +20,7 @@ use educe::Educe;
 use fs4::tokio::AsyncFileExt;
 use mime::Mime;
 use rdb_pagination::{prelude::*, Pagination, PaginationOptions, SqlJoin, SqlOrderByComponent};
+use sha2::{Digest, Sha256};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteQueryResult},
     Acquire, Pool, Row, Sqlite,
@@ -26,7 +28,7 @@ use sqlx::{
 use tokio::{
     fs,
     fs::{File, OpenOptions},
-    io::AsyncRead,
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     task::JoinSet,
     time,
 };
@@ -34,10 +36,9 @@ pub use uuid::Uuid;
 
 use crate::{
     functions::{
-        allow_not_found_error, detect_file_type_by_buffer, detect_file_type_by_path,
-        get_current_timestamp, get_file_name, get_file_size_and_hash_by_reader_and_copy_to_file,
-        get_file_size_by_reader_and_copy_to_file, get_hash_by_buffer, get_hash_by_path,
-        get_random_hash,
+        allow_not_found_error, calculate_buffer_size, detect_file_type_by_buffer,
+        detect_file_type_by_path, get_current_timestamp, get_file_name, get_hash_by_buffer,
+        get_hash_by_path, get_random_hash, BUFFER_SIZE,
     },
     guard::{DeleteGuard, OpenGuard, PutGuard, TemporaryFileGuard},
     DatalithCreateError, DatalithFile, DatalithReadError, DatalithWriteError, DEFAULT_MIME_TYPE,
@@ -737,7 +738,7 @@ impl Datalith {
         reader: impl AsyncRead + Unpin,
         file_name: Option<impl Into<String>>,
         file_type: Option<(Mime, FileTypeLevel)>,
-        expected_reader_length: Option<usize>,
+        expected_reader_length: Option<u64>,
     ) -> Result<DatalithFile, DatalithWriteError> {
         let temporary_file_path = self.get_temporary_file_path(Uuid::new_v4()).await?;
 
@@ -891,7 +892,7 @@ impl Datalith {
         reader: impl AsyncRead + Unpin,
         file_name: Option<impl Into<String>>,
         file_type: Option<(Mime, FileTypeLevel)>,
-        expected_reader_length: Option<usize>,
+        expected_reader_length: Option<u64>,
     ) -> Result<DatalithFile, DatalithWriteError> {
         let temporary_file_path = self.get_temporary_file_path(Uuid::new_v4()).await?;
 
@@ -1446,7 +1447,6 @@ impl Datalith {
     }
 }
 
-#[allow(clippy::result_large_err)]
 async fn handle_file_type(
     file_type: Option<(Mime, FileTypeLevel)>,
     detect_file_type: impl Future<Output = Option<Mime>> + Sized,
@@ -1481,4 +1481,251 @@ async fn handle_file_type(
 
         Ok(detected_file_type.unwrap_or(DEFAULT_MIME_TYPE))
     }
+}
+
+pub(crate) async fn get_file_size_by_reader_and_copy_to_file(
+    mut reader: impl AsyncRead + Unpin,
+    file_path: impl AsRef<Path>,
+    expected_reader_length: Option<u64>,
+) -> Result<u64, DatalithWriteError> {
+    let file_path = file_path.as_ref();
+
+    let mut file = File::create(file_path).await?;
+
+    // copy the data
+
+    let mut file_size = 0u64;
+
+    let mut retry_count = 0;
+
+    if let Some(expected_reader_length) = expected_reader_length {
+        let mut buffer = vec![0; calculate_buffer_size(expected_reader_length)];
+
+        loop {
+            let c = match reader.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(c) => c,
+                Err(error) if error.kind() == ErrorKind::Interrupted => {
+                    retry_count += 1;
+
+                    if retry_count > 5 {
+                        return Err(error.into());
+                    }
+
+                    continue;
+                },
+                Err(error) => {
+                    fs::remove_file(file_path).await?;
+                    return Err(error.into());
+                },
+            };
+
+            match file.write_all(&buffer[..c]).await {
+                Ok(_) => (),
+                Err(error) => {
+                    fs::remove_file(file_path).await?;
+                    return Err(error.into());
+                },
+            }
+
+            file_size += c as u64;
+
+            if file_size > expected_reader_length {
+                fs::remove_file(file_path).await?;
+
+                // read the remaining data
+                loop {
+                    match reader.read(&mut buffer).await {
+                        Ok(0) => break,
+                        Ok(c) => {
+                            file_size += c as u64;
+                        },
+                        Err(error) if error.kind() == ErrorKind::Interrupted => {
+                            retry_count += 1;
+
+                            if retry_count > 5 {
+                                return Err(error.into());
+                            }
+
+                            continue;
+                        },
+                        Err(error) => {
+                            return Err(error.into());
+                        },
+                    }
+
+                    retry_count = 0;
+                }
+
+                return Err(DatalithWriteError::FileLengthTooLarge {
+                    expected_file_length: expected_reader_length,
+                    actual_file_length:   file_size,
+                });
+            }
+
+            retry_count = 0;
+        }
+    } else {
+        let mut buffer = vec![0; BUFFER_SIZE];
+
+        loop {
+            let c = match reader.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(c) => c,
+                Err(error) if error.kind() == ErrorKind::Interrupted => {
+                    retry_count += 1;
+
+                    if retry_count > 5 {
+                        return Err(error.into());
+                    }
+
+                    continue;
+                },
+                Err(error) => {
+                    fs::remove_file(file_path).await?;
+                    return Err(error.into());
+                },
+            };
+
+            match file.write_all(&buffer[..c]).await {
+                Ok(_) => (),
+                Err(error) => {
+                    fs::remove_file(file_path).await?;
+                    return Err(error.into());
+                },
+            }
+
+            file_size += c as u64;
+
+            retry_count = 0;
+        }
+    }
+
+    Ok(file_size)
+}
+
+async fn get_file_size_and_hash_by_reader_and_copy_to_file(
+    mut reader: impl AsyncRead + Unpin,
+    file_path: impl AsRef<Path>,
+    expected_reader_length: Option<u64>,
+) -> Result<(u64, [u8; 32]), DatalithWriteError> {
+    let file_path = file_path.as_ref();
+
+    let mut hasher = Sha256::new();
+    let mut file = File::create(file_path).await?;
+
+    // copy the data and calculate the hash value
+
+    let mut file_size = 0u64;
+
+    let mut retry_count = 0;
+
+    if let Some(expected_reader_length) = expected_reader_length {
+        let mut buffer = vec![0; calculate_buffer_size(expected_reader_length)];
+
+        loop {
+            let c = match reader.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(c) => c,
+                Err(error) if error.kind() == ErrorKind::Interrupted => {
+                    retry_count += 1;
+
+                    if retry_count > 5 {
+                        return Err(error.into());
+                    }
+
+                    continue;
+                },
+                Err(error) => {
+                    fs::remove_file(file_path).await?;
+                    return Err(error.into());
+                },
+            };
+
+            match file.write_all(&buffer[..c]).await {
+                Ok(_) => (),
+                Err(error) => {
+                    fs::remove_file(file_path).await?;
+                    return Err(error.into());
+                },
+            }
+
+            hasher.update(&buffer[..c]);
+
+            file_size += c as u64;
+
+            if file_size > expected_reader_length {
+                fs::remove_file(file_path).await?;
+
+                // read the remaining data
+                loop {
+                    match reader.read(&mut buffer).await {
+                        Ok(0) => break,
+                        Ok(c) => {
+                            file_size += c as u64;
+                        },
+                        Err(error) if error.kind() == ErrorKind::Interrupted => {
+                            retry_count += 1;
+
+                            if retry_count > 5 {
+                                return Err(error.into());
+                            }
+
+                            continue;
+                        },
+                        Err(error) => {
+                            return Err(error.into());
+                        },
+                    }
+
+                    retry_count = 0;
+                }
+
+                return Err(DatalithWriteError::FileLengthTooLarge {
+                    expected_file_length: expected_reader_length,
+                    actual_file_length:   file_size,
+                });
+            }
+
+            retry_count = 0;
+        }
+    } else {
+        let mut buffer = vec![0; BUFFER_SIZE];
+
+        loop {
+            let c = match reader.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(c) => c,
+                Err(error) if error.kind() == ErrorKind::Interrupted => {
+                    retry_count += 1;
+
+                    if retry_count > 5 {
+                        return Err(error.into());
+                    }
+
+                    continue;
+                },
+                Err(error) => {
+                    fs::remove_file(file_path).await?;
+                    return Err(error.into());
+                },
+            };
+
+            match file.write_all(&buffer[..c]).await {
+                Ok(_) => (),
+                Err(error) => {
+                    fs::remove_file(file_path).await?;
+                    return Err(error.into());
+                },
+            }
+
+            hasher.update(&buffer[..c]);
+
+            file_size += c as u64;
+
+            retry_count = 0;
+        }
+    }
+
+    Ok((file_size, hasher.finalize().into()))
 }

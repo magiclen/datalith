@@ -1,4 +1,6 @@
-use datalith_core::{CenterCrop, DatalithImage, DatalithManager, Uuid};
+use datalith_core::{
+    CenterCrop, DatalithImage, DatalithImageWriteError, DatalithManager, DatalithWriteError, Uuid,
+};
 use rocket::{
     http::{ContentType, Status},
     response::content::RawJson,
@@ -120,11 +122,12 @@ async fn stream_upload(
     save_original_file: Option<Boolean>,
     data: Data<'_>,
 ) -> Result<RawJson<String>, Status> {
-    let content_length = validate_content_length(server_config, content_length)?;
+    let expected_reader_length = validate_content_length(server_config, content_length)?;
     let center_crop = parse_center_crop(center_crop)?;
     let save_original_file = save_original_file.map(|e| e.0).unwrap_or(true);
 
-    let stream = data.open(server_config.max_file_size.into());
+    // max_file_size plus 1 in order to distinguish the too large payload
+    let stream = data.open((server_config.max_file_size + 1).into());
 
     match datalith
         .put_image_by_reader(
@@ -134,7 +137,7 @@ async fn stream_upload(
             max_height,
             center_crop,
             save_original_file,
-            content_length,
+            Some(expected_reader_length),
         )
         .await
     {
@@ -143,6 +146,11 @@ async fn stream_upload(
 
             Ok(RawJson(serde_json::to_string(&value).unwrap()))
         },
+        Err(DatalithImageWriteError::DatalithWriteError(
+            DatalithWriteError::FileLengthTooLarge {
+                ..
+            },
+        )) => Err(Status::PayloadTooLarge),
         Err(error) => {
             rocket::error!("{error}");
 

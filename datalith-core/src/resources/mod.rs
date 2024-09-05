@@ -105,7 +105,7 @@ impl Datalith {
         reader: impl AsyncRead + Unpin,
         file_name: Option<impl Into<String>>,
         file_type: Option<(Mime, FileTypeLevel)>,
-        expected_reader_length: Option<usize>,
+        expected_reader_length: Option<u64>,
     ) -> Result<DatalithResource, DatalithWriteError> {
         let file_name = file_name.map(|e| e.into());
 
@@ -128,7 +128,7 @@ impl Datalith {
         reader: impl AsyncRead + Unpin,
         file_name: Option<impl Into<String>>,
         file_type: Option<(Mime, FileTypeLevel)>,
-        expected_reader_length: Option<usize>,
+        expected_reader_length: Option<u64>,
     ) -> Result<DatalithResource, DatalithWriteError> {
         let file_name = file_name.map(|e| e.into());
 

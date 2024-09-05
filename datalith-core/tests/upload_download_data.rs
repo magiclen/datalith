@@ -194,7 +194,7 @@ async fn upload_download_data() {
                     &mut file,
                     Some("image.png"),
                     None,
-                    Some(IMAGE_SIZE as usize),
+                    Some(IMAGE_SIZE),
                 )
                 .await
                 .unwrap();
@@ -241,7 +241,7 @@ async fn upload_download_data() {
             let mut file = File::open(IMAGE_PATH).await.unwrap();
 
             let file = datalith
-                .put_file_by_reader(&mut file, Some("image.png"), None, Some(IMAGE_SIZE as usize))
+                .put_file_by_reader(&mut file, Some("image.png"), None, Some(IMAGE_SIZE))
                 .await
                 .unwrap();
 
@@ -521,7 +521,7 @@ async fn resource_upload_download_data() {
                     &mut file,
                     Some("image.png"),
                     None,
-                    Some(IMAGE_SIZE as usize),
+                    Some(IMAGE_SIZE),
                 )
                 .await
                 .unwrap();
@@ -578,12 +578,7 @@ async fn resource_upload_download_data() {
             let mut file = File::open(IMAGE_PATH).await.unwrap();
 
             let resource = datalith
-                .put_resource_by_reader(
-                    &mut file,
-                    Some("image.png"),
-                    None,
-                    Some(IMAGE_SIZE as usize),
-                )
+                .put_resource_by_reader(&mut file, Some("image.png"), None, Some(IMAGE_SIZE))
                 .await
                 .unwrap();
 
@@ -773,7 +768,7 @@ async fn image_upload_download_data() {
                     None,
                     None,
                     true,
-                    Some(IMAGE_SIZE as usize),
+                    Some(IMAGE_SIZE),
                 )
                 .await
                 .unwrap();

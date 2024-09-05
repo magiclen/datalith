@@ -3,11 +3,11 @@ use std::num::ParseIntError;
 use rocket::{http::Status, outcome::Outcome, request, request::FromRequest, Request};
 
 #[derive(Debug, Clone, Default)]
-pub struct ContentLength(usize);
+pub struct ContentLength(u64);
 
 impl ContentLength {
     #[inline]
-    pub const fn to_usize(&self) -> usize {
+    pub const fn to_u64(&self) -> u64 {
         self.0
     }
 }
@@ -20,7 +20,7 @@ impl<'r> FromRequest<'r> for ContentLength {
         let content_length: Option<&str> = request.headers().get("content-length").next(); // Only fetch the first one.
 
         if let Some(content_length) = content_length {
-            match content_length.parse::<usize>() {
+            match content_length.parse::<u64>() {
                 Ok(content_length) => Outcome::Success(Self(content_length)),
                 Err(error) => Outcome::Error((Status::NotFound, error)),
             }
@@ -38,7 +38,7 @@ impl<'r> FromRequest<'r> for &'r ContentLength {
         let content_length: Option<&str> = request.headers().get("content-length").next(); // Only fetch the first one.
 
         if let Some(content_length) = content_length {
-            match content_length.parse::<usize>() {
+            match content_length.parse::<u64>() {
                 Ok(content_length) => {
                     Outcome::Success(request.local_cache(|| ContentLength(content_length)))
                 },

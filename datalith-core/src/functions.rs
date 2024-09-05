@@ -16,18 +16,14 @@ use rand::Rng;
 use sha2::{Digest, Sha256};
 #[cfg(feature = "magic")]
 use tokio::task;
-use tokio::{
-    fs,
-    fs::File,
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-};
+use tokio::{fs::File, io::AsyncReadExt};
 use trim_in_place::TrimInPlace;
 
 #[cfg(feature = "magic")]
 use crate::magic_cookie_pool::MagicCookiePool;
 
 /// The buffer size used when reading a file.
-const BUFFER_SIZE: usize = 64 * 1024;
+pub(crate) const BUFFER_SIZE: usize = 64 * 1024;
 
 #[cfg(feature = "magic")]
 static MAGIC_COOKIE: Lazy<Option<MagicCookiePool>> =
@@ -170,7 +166,7 @@ pub(crate) async fn get_hash_by_path(file_path: impl AsRef<Path>) -> io::Result<
 
     let mut hasher = Sha256::new();
 
-    let mut buffer = vec![0; calculate_buffer_size(Some(expected_file_size as usize))];
+    let mut buffer = vec![0; calculate_buffer_size(expected_file_size)];
 
     loop {
         let c = file.read(&mut buffer).await?;
@@ -196,107 +192,6 @@ pub(crate) fn get_hash_by_buffer(buffer: impl AsRef<[u8]>) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-pub(crate) async fn get_file_size_by_reader_and_copy_to_file(
-    mut reader: impl AsyncRead + Unpin,
-    file_path: impl AsRef<Path>,
-    expected_reader_length: Option<usize>,
-) -> io::Result<u64> {
-    let file_path = file_path.as_ref();
-
-    let mut file = File::create(file_path).await?;
-
-    let mut buffer = vec![0; calculate_buffer_size(expected_reader_length)];
-    let mut file_size = 0u64;
-
-    // copy the data and calculate the hash value
-    let mut retry_count = 0;
-    loop {
-        let c = match reader.read(&mut buffer).await {
-            Ok(0) => break,
-            Ok(c) => c,
-            Err(error) if error.kind() == ErrorKind::Interrupted => {
-                retry_count += 1;
-
-                if retry_count > 5 {
-                    return Err(error);
-                }
-
-                continue;
-            },
-            Err(error) => {
-                fs::remove_file(file_path).await?;
-                return Err(error);
-            },
-        };
-
-        match file.write_all(&buffer[..c]).await {
-            Ok(_) => (),
-            Err(error) => {
-                fs::remove_file(file_path).await?;
-                return Err(error);
-            },
-        }
-
-        file_size += c as u64;
-
-        retry_count = 0;
-    }
-
-    Ok(file_size)
-}
-
-pub(crate) async fn get_file_size_and_hash_by_reader_and_copy_to_file(
-    mut reader: impl AsyncRead + Unpin,
-    file_path: impl AsRef<Path>,
-    expected_reader_length: Option<usize>,
-) -> io::Result<(u64, [u8; 32])> {
-    let file_path = file_path.as_ref();
-
-    let mut hasher = Sha256::new();
-    let mut file = File::create(file_path).await?;
-
-    let mut buffer = vec![0; calculate_buffer_size(expected_reader_length)];
-    let mut file_size = 0u64;
-
-    // copy the data and calculate the hash value
-    let mut retry_count = 0;
-    loop {
-        let c = match reader.read(&mut buffer).await {
-            Ok(0) => break,
-            Ok(c) => c,
-            Err(error) if error.kind() == ErrorKind::Interrupted => {
-                retry_count += 1;
-
-                if retry_count > 5 {
-                    return Err(error);
-                }
-
-                continue;
-            },
-            Err(error) => {
-                fs::remove_file(file_path).await?;
-                return Err(error);
-            },
-        };
-
-        match file.write_all(&buffer[..c]).await {
-            Ok(_) => (),
-            Err(error) => {
-                fs::remove_file(file_path).await?;
-                return Err(error);
-            },
-        }
-
-        hasher.update(&buffer[..c]);
-
-        file_size += c as u64;
-
-        retry_count = 0;
-    }
-
-    Ok((file_size, hasher.finalize().into()))
-}
-
 #[inline]
 pub(crate) fn get_random_hash() -> [u8; 32] {
     let mut rng = rand::rngs::OsRng;
@@ -317,10 +212,6 @@ pub(crate) fn allow_not_found_error(result: io::Result<()>) -> io::Result<()> {
 }
 
 #[inline]
-pub(crate) fn calculate_buffer_size(expected_length: Option<usize>) -> usize {
-    if let Some(expected_length) = expected_length {
-        expected_length.clamp(64, BUFFER_SIZE)
-    } else {
-        BUFFER_SIZE
-    }
+pub(crate) fn calculate_buffer_size(expected_length: u64) -> usize {
+    expected_length.clamp(64, BUFFER_SIZE as u64) as usize
 }

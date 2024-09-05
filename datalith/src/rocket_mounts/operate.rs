@@ -125,24 +125,35 @@ async fn stream_upload(
     };
     let mime_type = content_type.clone().map(|e| (e, FileTypeLevel::Manual));
 
-    let content_length = validate_content_length(server_config, content_length)?;
+    let expected_reader_length = validate_content_length(server_config, content_length)?;
 
     let temporary = temporary.map(|e| e.0).unwrap_or(false);
 
-    let stream = data.open(server_config.max_file_size.into());
+    // max_file_size plus 1 in order to distinguish the too large payload
+    let stream = data.open((server_config.max_file_size + 1).into());
 
     match if temporary {
         datalith
-            .put_resource_by_reader_temporarily(stream, file_name, mime_type, content_length)
+            .put_resource_by_reader_temporarily(
+                stream,
+                file_name,
+                mime_type,
+                Some(expected_reader_length),
+            )
             .await
     } else {
-        datalith.put_resource_by_reader(stream, file_name, mime_type, content_length).await
+        datalith
+            .put_resource_by_reader(stream, file_name, mime_type, Some(expected_reader_length))
+            .await
     } {
         Ok(file) => {
             let value = datalith_resource_to_json_value(file);
 
             Ok(RawJson(serde_json::to_string(&value).unwrap()))
         },
+        Err(DatalithWriteError::FileLengthTooLarge {
+            ..
+        }) => Err(Status::PayloadTooLarge),
         Err(DatalithWriteError::IOError(error)) if error.kind() == ErrorKind::Other => {
             Err(Status::BadRequest)
         },
@@ -176,17 +187,19 @@ pub fn mounts(rocket: Rocket<Build>) -> Rocket<Build> {
 pub fn validate_content_length(
     server_config: &State<ServerConfig>,
     content_length: Option<&ContentLength>,
-) -> Result<Option<usize>, Status> {
-    if let Some(content_length) = content_length {
-        let content_length = content_length.to_usize();
+) -> Result<u64, Status> {
+    let max_file_size = server_config.max_file_size;
 
-        if content_length > server_config.max_file_size as usize {
+    if let Some(content_length) = content_length {
+        let content_length = content_length.to_u64();
+
+        if content_length > max_file_size {
             return Err(Status::PayloadTooLarge);
         }
 
-        Ok(Some(content_length))
+        Ok(content_length)
     } else {
-        Ok(None)
+        Ok(max_file_size)
     }
 }
 

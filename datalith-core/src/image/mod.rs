@@ -20,7 +20,8 @@ use tokio::{io::AsyncRead, task, task::JoinSet};
 use uuid::Uuid;
 
 use crate::{
-    functions::{get_file_name, get_file_size_by_reader_and_copy_to_file},
+    datalith::get_file_size_by_reader_and_copy_to_file,
+    functions::get_file_name,
     guard::{DeleteGuard, TemporaryFileGuard},
     image::sync::ReadOnlyImageResource,
     Datalith, DatalithFile, DatalithReadError, FileTypeLevel,
@@ -228,7 +229,7 @@ impl Datalith {
         max_height: Option<u16>,
         center_crop: Option<CenterCrop>,
         save_original_file: bool,
-        expected_reader_length: Option<usize>,
+        expected_reader_length: Option<u64>,
     ) -> Result<DatalithImage, DatalithImageWriteError> {
         let temporary_file_path = self.get_temporary_file_path(Uuid::new_v4()).await?;
 
