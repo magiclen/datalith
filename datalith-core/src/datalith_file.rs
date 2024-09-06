@@ -1,5 +1,6 @@
 use std::{
     io,
+    io::SeekFrom,
     ops::Deref,
     pin::Pin,
     task::{Context, Poll},
@@ -10,7 +11,7 @@ use educe::Educe;
 use mime::Mime;
 use tokio::{
     fs::File,
-    io::{AsyncRead, ReadBuf},
+    io::{AsyncRead, AsyncSeek, ReadBuf},
 };
 use uuid::Uuid;
 
@@ -185,5 +186,17 @@ impl AsyncRead for ReadableDatalithFile {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         Pin::new(&mut self.file).poll_read(cx, buf)
+    }
+}
+
+impl AsyncSeek for ReadableDatalithFile {
+    #[inline]
+    fn start_seek(mut self: Pin<&mut Self>, position: SeekFrom) -> io::Result<()> {
+        Pin::new(&mut self.file).start_seek(position)
+    }
+
+    #[inline]
+    fn poll_complete(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
+        Pin::new(&mut self.file).poll_complete(cx)
     }
 }

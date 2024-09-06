@@ -104,13 +104,12 @@ impl<'r, 'o: 'r> Responder<'r, 'o> for DatalithResponse {
             response.raw_header("x-uuid", data.uuid.to_string());
             response.raw_header("date", data.date.to_rfc2822());
             response.raw_header("content-type", data.file_type.to_string());
-            response.raw_header("content-length", data.file.file_size().to_string());
 
             for (name, value) in data.extra_headers {
                 response.raw_header(name, value);
             }
 
-            response.streamed_body(data.file);
+            response.sized_body(data.file.file_size().try_into().ok(), data.file);
         } else {
             response.status(Status::NotModified);
         }
