@@ -133,7 +133,7 @@ impl Datalith {
                 )
                 .await?;
 
-            (original_file.created_at(), original_file.file_name().to_string(), Some(original_file))
+            (Local::now(), original_file.file_name().to_string(), Some(original_file))
         } else {
             let created_at = Local::now();
 
@@ -182,25 +182,49 @@ impl Datalith {
         let (input_width, input_height, file_type, has_alpha_channel) =
             self.read_image_metadata(input.clone()).await?;
 
-        // save the original file if needed
-        let (created_at, file_name, original_file) = if save_original_file {
-            let original_file = self
-                .put_file_by_path(file_path, file_name, Some((file_type, FileTypeLevel::Manual)))
-                .await?;
-
-            (original_file.created_at(), original_file.file_name().to_string(), Some(original_file))
-        } else {
-            let created_at = Local::now();
-
-            let file_name = if let Some(file_name) = file_name {
-                get_file_name(Some(file_name), created_at, &file_type)
+        fn generate_file_name(
+            file_name: Option<String>,
+            file_path: &Path,
+            created_at: DateTime<Local>,
+            file_type: &Mime,
+        ) -> String {
+            if let Some(file_name) = file_name {
+                get_file_name(Some(file_name), created_at, file_type)
             } else if let Some(file_name) = file_path.file_name() {
                 file_name.to_string_lossy().into_owned()
             } else {
                 unreachable!();
-            };
+            }
+        }
 
-            (created_at, get_file_name(Some(file_name), created_at, &file_type), None)
+        let file_name = file_name.map(|e| e.into());
+
+        let (created_at, file_name, original_file) = if save_original_file {
+            let original_file = self
+                .put_file_by_path(
+                    file_path,
+                    file_name.clone(),
+                    Some((file_type.clone(), FileTypeLevel::Manual)),
+                )
+                .await?;
+
+            if original_file.is_new() {
+                (
+                    original_file.created_at(),
+                    original_file.file_name().to_string(),
+                    Some(original_file),
+                )
+            } else {
+                let created_at = Local::now();
+                let file_name = generate_file_name(file_name, file_path, created_at, &file_type);
+
+                (created_at, file_name, None)
+            }
+        } else {
+            let created_at = Local::now();
+            let file_name = generate_file_name(file_name, file_path, created_at, &file_type);
+
+            (created_at, file_name, None)
         };
 
         self.put_image(
@@ -733,7 +757,7 @@ impl Datalith {
 
         #[allow(clippy::type_complexity)]
         #[rustfmt::skip]
-        let row: Option<(DateTime<Local>, String, u16, u16, Option<Uuid>, bool)> = sqlx::query_as(
+        let row: Option<(i64, String, u16, u16, Option<Uuid>, bool)> = sqlx::query_as(
             "
                 SELECT
                     `created_at`,
@@ -793,6 +817,8 @@ impl Datalith {
 
                 (thumbnails, fallback_thumbnails)
             };
+
+            let created_at = DateTime::from_timestamp_millis(created_at).unwrap();
 
             let image = DatalithImage::new(
                 image_id,

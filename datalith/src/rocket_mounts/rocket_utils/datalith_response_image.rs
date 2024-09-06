@@ -1,4 +1,4 @@
-use std::{fmt::Write, path::Path};
+use std::{collections::HashMap, fmt::Write, path::Path};
 
 use datalith_core::{get_image_extension, mime, Datalith, DatalithReadError, Uuid, MIME_WEBP};
 use rocket::{
@@ -7,7 +7,7 @@ use rocket::{
 };
 use rocket_etag_if_none_match::{entity_tag::EntityTag, EtagIfNoneMatch};
 
-use super::{response_data::ResponseData, DatalithResponse};
+use super::{DatalithResponse, ResponseData};
 
 #[derive(Debug)]
 pub enum ResolutionType {
@@ -60,8 +60,15 @@ impl DatalithResponse {
 
             match image {
                 Some(image) => {
+                    let uuid = image.id();
+                    let date = image.created_at();
+
                     let mut file_name = image.image_stem().clone();
+                    let image_width = image.image_width();
+                    let image_height = image.image_height();
                     let has_alpha_channel = image.has_alpha_channel();
+
+                    let mut extra_headers = HashMap::with_capacity(2);
 
                     let (file, multiplier) = match resolution_type {
                         ResolutionType::Original => {
@@ -113,6 +120,13 @@ impl DatalithResponse {
 
                         file_name.write_fmt(format_args!("@{multiplier}x.{ext}")).unwrap();
 
+                        let multiplier_u16 = multiplier as u16;
+
+                        extra_headers
+                            .insert("x-image-width", (image_width * multiplier_u16).to_string());
+                        extra_headers
+                            .insert("x-image-height", (image_height * multiplier_u16).to_string());
+
                         file_type
                     };
 
@@ -121,8 +135,11 @@ impl DatalithResponse {
                             etag,
                             file: file.into_readable().await?,
                             download,
+                            uuid,
+                            date,
                             file_name,
                             file_type,
+                            extra_headers,
                         }),
                     }))
                 },

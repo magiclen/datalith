@@ -1,8 +1,24 @@
-use datalith_core::{Datalith, DatalithFile, DatalithReadError, Uuid};
+use std::collections::HashMap;
+
+use datalith_core::{
+    chrono::{DateTime, Local},
+    mime::Mime,
+    Datalith, DatalithFile, DatalithReadError, ReadableDatalithFile, Uuid,
+};
 use rocket::{http::Status, response, response::Responder, Request, Response};
 use rocket_etag_if_none_match::{entity_tag::EntityTag, EtagIfNoneMatch};
 
-use super::response_data::ResponseData;
+#[derive(Debug)]
+pub struct ResponseData {
+    pub etag:          EntityTag<'static>,
+    pub file:          ReadableDatalithFile,
+    pub download:      bool,
+    pub uuid:          Uuid,
+    pub date:          DateTime<Local>,
+    pub file_name:     String,
+    pub file_type:     Mime,
+    pub extra_headers: HashMap<&'static str, String>,
+}
 
 #[derive(Debug)]
 pub struct DatalithResponse {
@@ -40,6 +56,9 @@ impl DatalithResponse {
 
             match resource {
                 Some(resource) => {
+                    let uuid = resource.id();
+                    let date = resource.created_at();
+
                     let file_name = resource.file_name().clone();
                     let file_type = resource.file_type().clone();
 
@@ -48,8 +67,11 @@ impl DatalithResponse {
                             etag,
                             file: DatalithFile::from(resource).into_readable().await?,
                             download,
+                            uuid,
+                            date,
                             file_name,
                             file_type,
+                            extra_headers: HashMap::new(),
                         }),
                     }))
                 },
@@ -79,9 +101,14 @@ impl<'r, 'o: 'r> Responder<'r, 'o> for DatalithResponse {
                 response.raw_header("content-disposition", v);
             }
 
+            response.raw_header("x-uuid", data.uuid.to_string());
+            response.raw_header("date", data.date.to_rfc2822());
             response.raw_header("content-type", data.file_type.to_string());
-
             response.raw_header("content-length", data.file.file_size().to_string());
+
+            for (name, value) in data.extra_headers {
+                response.raw_header(name, value);
+            }
 
             response.streamed_body(data.file);
         } else {

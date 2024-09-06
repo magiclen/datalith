@@ -256,7 +256,7 @@ impl Datalith {
         let id = id.into();
 
         #[rustfmt::skip]
-        let row: Option<(DateTime<Local>, String, String, Uuid)> = sqlx::query_as(
+        let row: Option<(i64, String, String, Uuid)> = sqlx::query_as(
             "
                 SELECT
                     `resources`.`created_at`,
@@ -280,6 +280,8 @@ impl Datalith {
             let file = self.get_file_by_id(file_id).await?;
 
             if let Some(file) = file {
+                let created_at = DateTime::from_timestamp_millis(created_at).unwrap();
+
                 return Ok(Some(DatalithResource::new(
                     id,
                     created_at,

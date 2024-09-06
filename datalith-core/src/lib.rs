@@ -168,6 +168,7 @@ datalith.close().await;
 ```
 */
 
+pub extern crate chrono;
 pub extern crate mime;
 pub extern crate uuid;
 
