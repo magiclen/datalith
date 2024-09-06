@@ -207,7 +207,7 @@ impl Datalith {
     }
 
     #[inline]
-    fn get_expired_timestamp<Tz: TimeZone>(&self, current_time: DateTime<Tz>) -> i64 {
+    pub(crate) fn get_expired_timestamp<Tz: TimeZone>(&self, current_time: DateTime<Tz>) -> i64 {
         current_time.timestamp_millis() + self.get_temporary_file_lifespan().as_millis() as i64
     }
 }
@@ -1087,20 +1087,40 @@ impl Datalith {
             time::sleep(Duration::from_millis(10)).await;
         }
 
+        let is_temporary = {
+            let result = sqlx::query(
+                "
+                    UPDATE
+                        `files`
+                    SET
+                        `expired_at` = ?
+                    WHERE
+                        `id` = ?
+                            AND `expired_at` > ?
+                ",
+            )
+            .bind(current_timestamp)
+            .bind(id)
+            .bind(current_timestamp)
+            .execute(&self.0.db)
+            .await?;
+
+            result.rows_affected() > 0
+        };
+
         #[rustfmt::skip]
-        let row: Option<(i64, u64, String, String, Option<i64>)> = sqlx::query_as(
+        let row: Option<(i64, u64, String, String)> = sqlx::query_as(
             "
                 SELECT
                     `created_at`,
                     `file_size`,
                     `file_type`,
-                    `file_name`,
-                    `expired_at`
+                    `file_name`
                 FROM
                     `files`
                 WHERE
                     `id` = ?
-                        AND ( `expired_at` IS NULL OR `expired_at` > ? )
+                        AND (`expired_at` IS NULL OR `expired_at` = ?)
             ",
         )
         .bind(id)
@@ -1108,28 +1128,9 @@ impl Datalith {
         .fetch_optional(&self.0.db)
         .await?;
 
-        if let Some((created_at, file_size, file_type, file_name, expired_at)) = row {
+        if let Some((created_at, file_size, file_type, file_name)) = row {
             let created_at = DateTime::from_timestamp_millis(created_at).unwrap();
             let file_type = Mime::from_str(&file_type).unwrap();
-            let is_temporary = expired_at.is_some();
-
-            if is_temporary {
-                #[rustfmt::skip]
-                sqlx::query(
-                    "
-                        UPDATE
-                            `files`
-                        SET
-                            `expired_at` = ?
-                        WHERE
-                            `id` = ?
-                    ",
-                )
-                .bind(current_timestamp)
-                .bind(id)
-                .execute(&self.0.db)
-                .await?;
-            }
 
             let file = DatalithFile::new(
                 self.clone(),
@@ -1279,12 +1280,16 @@ impl Datalith {
                         FROM
                             `files`
                         {sql_join}
+                        WHERE
+                            (`expired_at` IS NULL OR `expired_at` > ?)
                         {sql_order_by}
                         {sql_limit_offset}
                     "
                 );
 
-                let query = sqlx::query_as(&sql);
+                let current_timestamp = get_current_timestamp();
+
+                let query = sqlx::query_as(&sql).bind(current_timestamp);
 
                 query.fetch_all(&mut *tx).await?
             };

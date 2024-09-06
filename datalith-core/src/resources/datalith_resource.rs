@@ -9,15 +9,17 @@ use crate::DatalithFile;
 #[derive(Debug, Educe)]
 #[educe(PartialEq, Eq, Hash)]
 pub struct DatalithResource {
-    id:         Uuid,
+    id:           Uuid,
     #[educe(Eq(ignore), Hash(ignore))]
-    created_at: DateTime<Local>,
+    created_at:   DateTime<Local>,
     #[educe(Eq(ignore), Hash(ignore))]
-    file_type:  Mime,
+    file_type:    Mime,
     #[educe(Eq(ignore), Hash(ignore))]
-    file_name:  String,
+    file_name:    String,
     #[educe(Eq(ignore), Hash(ignore))]
-    file:       DatalithFile,
+    file:         DatalithFile,
+    #[educe(Eq(ignore), Hash(ignore))]
+    is_temporary: bool,
 }
 
 impl DatalithResource {
@@ -29,6 +31,7 @@ impl DatalithResource {
         file_type: Mime,
         file_name: impl Into<String>,
         file: DatalithFile,
+        is_temporary: bool,
     ) -> Self
 where {
         let id = id.into();
@@ -40,6 +43,7 @@ where {
             file_type,
             file_name,
             file,
+            is_temporary,
         }
     }
 }
@@ -73,6 +77,12 @@ impl DatalithResource {
     #[inline]
     pub const fn file(&self) -> &DatalithFile {
         &self.file
+    }
+
+    /// Check if this resource is temporary.
+    #[inline]
+    pub const fn is_temporary(&self) -> bool {
+        self.is_temporary
     }
 }
 

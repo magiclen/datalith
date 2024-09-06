@@ -140,6 +140,7 @@ impl DatalithResponse {
                             file_name,
                             file_type,
                             extra_headers,
+                            is_temporary: false,
                         }),
                     }))
                 },

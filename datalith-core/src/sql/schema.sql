@@ -33,6 +33,8 @@ CREATE TABLE `resources` (
     `file_name`    TEXT    NOT NULL,
     -- UUID (128-bit)
     `file_id`      BLOB    NOT NULL,
+    -- UNIX timestamp (in milliseconds). If this exists, the resource is temporary
+    `expired_at`  INTEGER,
 
     FOREIGN KEY (`file_id`) REFERENCES `files` (`id`)
 );

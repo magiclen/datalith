@@ -114,11 +114,28 @@ async fn resource_parallel_and_temporary() {
             time::timeout(Duration::from_secs(1), datalith.delete_resource_by_id(id_4)),
         );
 
-        // timeout errors will be thrown
-        assert!(delete_result_1.is_err());
-        assert!(delete_result_2.is_err());
-        // 3 or 4 will be deleted successfully because they are the same file and the **count** is 2. After deleting, the count will be updated to 1
-        assert!(delete_result_3.is_err() ^ delete_result_4.is_err());
+        // only one will fail to delete because they are the same file and the **count** is 4
+        {
+            let mut failures = 0usize;
+
+            if delete_result_1.is_err() {
+                failures += 1;
+            }
+
+            if delete_result_2.is_err() {
+                failures += 1;
+            }
+
+            if delete_result_3.is_err() {
+                failures += 1;
+            }
+
+            if delete_result_4.is_err() {
+                failures += 1;
+            }
+
+            assert_eq!(1, failures);
+        }
 
         drop(resource_1);
         drop(resource_2);
@@ -132,10 +149,28 @@ async fn resource_parallel_and_temporary() {
             datalith.delete_resource_by_id(id_4),
         );
 
-        assert!(delete_result_1.unwrap());
-        assert!(delete_result_2.unwrap());
-        // 3 or 4 will be deleted successfully because one of them is already deleted
-        assert!(delete_result_3.unwrap() ^ delete_result_4.unwrap());
+        // only one will succeed to delete because the others are already deleted
+        {
+            let mut success = 0usize;
+
+            if delete_result_1.unwrap() {
+                success += 1;
+            }
+
+            if delete_result_2.unwrap() {
+                success += 1;
+            }
+
+            if delete_result_3.unwrap() {
+                success += 1;
+            }
+
+            if delete_result_4.unwrap() {
+                success += 1;
+            }
+
+            assert_eq!(1, success);
+        }
 
         let (delete_result_1, delete_result_2, delete_result_3, delete_result_4) = tokio::join!(
             datalith.delete_resource_by_id(id_1),

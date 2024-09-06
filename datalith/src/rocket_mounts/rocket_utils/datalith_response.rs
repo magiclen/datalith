@@ -18,6 +18,7 @@ pub struct ResponseData {
     pub file_name:     String,
     pub file_type:     Mime,
     pub extra_headers: HashMap<&'static str, String>,
+    pub is_temporary:  bool,
 }
 
 #[derive(Debug)]
@@ -27,9 +28,9 @@ pub struct DatalithResponse {
 
 impl DatalithResponse {
     #[inline]
-    pub fn is_temporary(&self) -> bool {
+    pub const fn is_temporary(&self) -> bool {
         if let Some(data) = self.data.as_ref() {
-            data.file.is_temporary()
+            data.is_temporary
         } else {
             false
         }
@@ -61,6 +62,7 @@ impl DatalithResponse {
 
                     let file_name = resource.file_name().clone();
                     let file_type = resource.file_type().clone();
+                    let is_temporary = resource.is_temporary();
 
                     Ok(Some(Self {
                         data: Some(ResponseData {
@@ -72,6 +74,7 @@ impl DatalithResponse {
                             file_name,
                             file_type,
                             extra_headers: HashMap::new(),
+                            is_temporary,
                         }),
                     }))
                 },

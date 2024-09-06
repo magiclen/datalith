@@ -30,13 +30,7 @@ async fn get(
     )
     .await
     {
-        Ok(Some(response)) => {
-            if response.is_temporary() {
-                Ok(CacheResponse::NoStore(response))
-            } else {
-                Ok(CacheResponse::NoCacheControl(response))
-            }
-        },
+        Ok(Some(response)) => Ok(CacheResponse::NoCacheControl(response)),
         Ok(None) => Err(Status::NotFound),
         Err(error) => {
             rocket::error!("{error}");

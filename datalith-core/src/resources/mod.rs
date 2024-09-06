@@ -46,10 +46,12 @@ impl Datalith {
 
         let file = self.put_file_by_buffer(buffer, file_name.clone(), file_type.clone()).await?;
 
-        self.put_resource(file, file_name, file_type).await
+        self.put_resource(file, file_name, file_type, false).await
     }
 
     /// Temporarily input a resource into Datalith using a buffer.
+    ///
+    /// The term `temporarily` means the file can be retrieved using the `get_resource_by_id` function only once. After that, it cannot be retrieved again.
     #[inline]
     pub async fn put_resource_by_buffer_temporarily(
         &self,
@@ -59,11 +61,9 @@ impl Datalith {
     ) -> Result<DatalithResource, DatalithWriteError> {
         let file_name = file_name.map(|e| e.into());
 
-        let file = self
-            .put_file_by_buffer_temporarily(buffer, file_name.clone(), file_type.clone())
-            .await?;
+        let file = self.put_file_by_buffer(buffer, file_name.clone(), file_type.clone()).await?;
 
-        self.put_resource(file, file_name, file_type).await
+        self.put_resource(file, file_name, file_type, true).await
     }
 
     /// Input a resource into Datalith using a file path.
@@ -78,10 +78,12 @@ impl Datalith {
 
         let file = self.put_file_by_path(file_path, file_name.clone(), file_type.clone()).await?;
 
-        self.put_resource(file, file_name, file_type).await
+        self.put_resource(file, file_name, file_type, false).await
     }
 
     /// Temporarily input a resource into Datalith using a file path.
+    ///
+    /// The term `temporarily` means the file can be retrieved using the `get_resource_by_id` function only once. After that, it cannot be retrieved again.
     #[inline]
     pub async fn put_resource_by_path_temporarily(
         &self,
@@ -91,11 +93,9 @@ impl Datalith {
     ) -> Result<DatalithResource, DatalithWriteError> {
         let file_name = file_name.map(|e| e.into());
 
-        let file = self
-            .put_file_by_path_temporarily(file_path, file_name.clone(), file_type.clone())
-            .await?;
+        let file = self.put_file_by_path(file_path, file_name.clone(), file_type.clone()).await?;
 
-        self.put_resource(file, file_name, file_type).await
+        self.put_resource(file, file_name, file_type, true).await
     }
 
     /// Input a resource into Datalith using a reader.
@@ -118,10 +118,12 @@ impl Datalith {
             )
             .await?;
 
-        self.put_resource(file, file_name, file_type).await
+        self.put_resource(file, file_name, file_type, false).await
     }
 
     /// Temporarily input a resource into Datalith using a reader.
+    ///
+    /// The term `temporarily` means the file can be retrieved using the `get_resource_by_id` function only once. After that, it cannot be retrieved again.
     #[inline]
     pub async fn put_resource_by_reader_temporarily(
         &self,
@@ -133,7 +135,7 @@ impl Datalith {
         let file_name = file_name.map(|e| e.into());
 
         let file = self
-            .put_file_by_reader_temporarily(
+            .put_file_by_reader(
                 reader,
                 file_name.clone(),
                 file_type.clone(),
@@ -141,7 +143,7 @@ impl Datalith {
             )
             .await?;
 
-        self.put_resource(file, file_name, file_type).await
+        self.put_resource(file, file_name, file_type, true).await
     }
 
     async fn put_resource(
@@ -149,6 +151,7 @@ impl Datalith {
         file: DatalithFile,
         file_name: Option<String>,
         file_type: Option<(Mime, FileTypeLevel)>,
+        temporary: bool,
     ) -> Result<DatalithResource, DatalithWriteError> {
         macro_rules! recover_file {
             () => {{
@@ -181,6 +184,9 @@ impl Datalith {
             (created_at, file_name, file_type)
         };
 
+        let expired_at =
+            if temporary { Some(self.get_expired_timestamp(created_at)) } else { None };
+
         let id = Uuid::new_v4();
 
         // insert resources
@@ -188,8 +194,8 @@ impl Datalith {
             #[rustfmt::skip]
             let result = sqlx::query(
                 "
-                    INSERT INTO `resources` (`id`, `created_at`, `file_name`, `file_type`, `file_id`)
-                        VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO `resources` (`id`, `created_at`, `file_name`, `file_type`, `file_id`, `expired_at`)
+                        VALUES (?, ?, ?, ?, ?, ?)
                 ",
             )
             .bind(id)
@@ -197,6 +203,7 @@ impl Datalith {
             .bind(file_name.as_str())
             .bind(file_type.essence_str())
             .bind(file.id())
+            .bind(expired_at)
             .execute(&self.0.db)
             .await;
 
@@ -212,7 +219,7 @@ impl Datalith {
             debug_assert!(result.rows_affected() > 0);
         }
 
-        Ok(DatalithResource::new(id, created_at, file_type, file_name, file))
+        Ok(DatalithResource::new(id, created_at, file_type, file_name, file, expired_at.is_some()))
     }
 }
 
@@ -232,10 +239,9 @@ impl Datalith {
                     1
                 FROM
                     `resources`
-                JOIN `files` ON `files`.`id` = `resources`.`file_id`
                 WHERE
-                    `resources`.`id` = ?
-                        AND ( `files`.`expired_at` IS NULL OR `files`.`expired_at` > ? )
+                    `id` = ?
+                        AND ( `expired_at` IS NULL OR `expired_at` > ? )
             ",
         )
         .bind(id.into())
@@ -255,20 +261,40 @@ impl Datalith {
 
         let id = id.into();
 
+        let is_temporary = {
+            let result = sqlx::query(
+                "
+                    UPDATE
+                        `resources`
+                    SET
+                        `expired_at` = ?
+                    WHERE
+                        `id` = ?
+                            AND `expired_at` > ?
+                ",
+            )
+            .bind(current_timestamp)
+            .bind(id)
+            .bind(current_timestamp)
+            .execute(&self.0.db)
+            .await?;
+
+            result.rows_affected() > 0
+        };
+
         #[rustfmt::skip]
         let row: Option<(i64, String, String, Uuid)> = sqlx::query_as(
             "
                 SELECT
-                    `resources`.`created_at`,
-                    `resources`.`file_type`,
-                    `resources`.`file_name`,
-                    `resources`.`file_id`
+                    `created_at`,
+                    `file_type`,
+                    `file_name`,
+                    `file_id`
                 FROM
                     `resources`
-                JOIN `files` ON `files`.`id` = `resources`.`file_id`
                 WHERE
-                    `resources`.`id` = ?
-                        AND ( `files`.`expired_at` IS NULL OR `files`.`expired_at` > ? )
+                    `id` = ?
+                        AND ( `expired_at` IS NULL OR `expired_at` = ? )
             ",
         )
         .bind(id)
@@ -288,6 +314,7 @@ impl Datalith {
                     Mime::from_str(&file_type).unwrap(),
                     file_name,
                     file,
+                    is_temporary,
                 )));
             }
         }
@@ -343,12 +370,16 @@ impl Datalith {
                         FROM
                             `resources`
                         {sql_join}
+                        WHERE
+                            (`expired_at` IS NULL OR `expired_at` > ?)
                         {sql_order_by}
                         {sql_limit_offset}
                     "
                 );
 
-                let query = sqlx::query_as(&sql);
+                let current_timestamp = get_current_timestamp();
+
+                let query = sqlx::query_as(&sql).bind(current_timestamp);
 
                 query.fetch_all(&mut *tx).await?
             };

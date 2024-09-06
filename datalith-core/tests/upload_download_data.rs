@@ -304,58 +304,7 @@ async fn resource_upload_download_data() {
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
-
-            let file = resource.file();
-            #[cfg(feature = "magic")]
-            assert_eq!(&mime::IMAGE_PNG, file.file_type());
-            assert_eq!(IMAGE_SIZE, file.file_size());
-            assert_eq!("image.png", file.file_name());
-            assert!(file.is_temporary());
-            assert!(file.is_new());
-
-            let mut reader = file.create_reader().await.unwrap();
-            let mut buffer = Vec::with_capacity(file.file_size() as usize);
-            reader.read_to_end(&mut buffer).await.unwrap();
-            assert_eq!(image, buffer);
-
-            resource.id()
-        };
-
-        // get
-        {
-            let resource = datalith.get_resource_by_id(id).await.unwrap().unwrap();
-
-            #[cfg(feature = "magic")]
-            assert_eq!(&mime::IMAGE_PNG, resource.file_type());
-            assert_eq!("image.png", resource.file_name());
-
-            let file = resource.file();
-            #[cfg(feature = "magic")]
-            assert_eq!(&mime::IMAGE_PNG, file.file_type());
-            assert_eq!(IMAGE_SIZE, file.file_size());
-            assert_eq!("image.png", file.file_name());
-            assert!(file.is_temporary());
-            assert!(!file.is_new());
-
-            let mut reader = file.create_reader().await.unwrap();
-            let mut buffer = Vec::with_capacity(file.file_size() as usize);
-            reader.read_to_end(&mut buffer).await.unwrap();
-            assert_eq!(image, buffer);
-        }
-
-        // temporarily resources can only get once
-        assert!(datalith.get_resource_by_id(id).await.unwrap().is_none());
-        assert!(!datalith.check_resource_exist(id).await.unwrap());
-    }
-
-    {
-        let id = {
-            let resource =
-                datalith.put_resource_by_buffer(image, Some("image.png"), None).await.unwrap();
-
-            #[cfg(feature = "magic")]
-            assert_eq!(&mime::IMAGE_PNG, resource.file_type());
-            assert_eq!("image.png", resource.file_name());
+            assert!(resource.is_temporary());
 
             let file = resource.file();
             #[cfg(feature = "magic")]
@@ -380,6 +329,62 @@ async fn resource_upload_download_data() {
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
+            assert!(resource.is_temporary());
+
+            let file = resource.file();
+            #[cfg(feature = "magic")]
+            assert_eq!(&mime::IMAGE_PNG, file.file_type());
+            assert_eq!(IMAGE_SIZE, file.file_size());
+            assert_eq!("image.png", file.file_name());
+            assert!(!file.is_temporary());
+            assert!(!file.is_new());
+
+            let mut reader = file.create_reader().await.unwrap();
+            let mut buffer = Vec::with_capacity(file.file_size() as usize);
+            reader.read_to_end(&mut buffer).await.unwrap();
+            assert_eq!(image, buffer);
+        }
+
+        // temporarily resources can only get once
+        assert!(datalith.get_resource_by_id(id).await.unwrap().is_none());
+        assert!(!datalith.check_resource_exist(id).await.unwrap());
+    }
+
+    {
+        let id = {
+            let resource =
+                datalith.put_resource_by_buffer(image, Some("image.png"), None).await.unwrap();
+
+            #[cfg(feature = "magic")]
+            assert_eq!(&mime::IMAGE_PNG, resource.file_type());
+            assert_eq!("image.png", resource.file_name());
+            assert!(!resource.is_temporary());
+
+            let file = resource.file();
+            #[cfg(feature = "magic")]
+            assert_eq!(&mime::IMAGE_PNG, file.file_type());
+            assert_eq!(IMAGE_SIZE, file.file_size());
+            assert_eq!("image.png", file.file_name());
+            assert!(!file.is_temporary());
+            // the previous temporary resource is existing, so it cannot generate a new file
+            assert!(!file.is_new());
+
+            let mut reader = file.create_reader().await.unwrap();
+            let mut buffer = Vec::with_capacity(file.file_size() as usize);
+            reader.read_to_end(&mut buffer).await.unwrap();
+            assert_eq!(image, buffer);
+
+            resource.id()
+        };
+
+        // get
+        {
+            let resource = datalith.get_resource_by_id(id).await.unwrap().unwrap();
+
+            #[cfg(feature = "magic")]
+            assert_eq!(&mime::IMAGE_PNG, resource.file_type());
+            assert_eq!("image.png", resource.file_name());
+            assert!(!resource.is_temporary());
 
             let file = resource.file();
             #[cfg(feature = "magic")]
@@ -406,21 +411,23 @@ async fn resource_upload_download_data() {
     {
         let id = {
             let resource = datalith
-                .put_resource_by_path_temporarily(IMAGE_PATH, None::<&str>, None)
+                .put_resource_by_path_temporarily(IMAGE_PATH, Some("image.png"), None)
                 .await
                 .unwrap();
 
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
+            assert!(resource.is_temporary());
 
             let file = resource.file();
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, file.file_type());
             assert_eq!(IMAGE_SIZE, file.file_size());
             assert_eq!("image.png", file.file_name());
-            assert!(file.is_temporary());
-            assert!(file.is_new());
+            assert!(!file.is_temporary());
+            // the previous temporary resource is existing, so it cannot generate a new file
+            assert!(!file.is_new());
 
             let mut reader = file.create_reader().await.unwrap();
             let mut buffer = Vec::with_capacity(file.file_size() as usize);
@@ -437,13 +444,14 @@ async fn resource_upload_download_data() {
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
+            assert!(resource.is_temporary());
 
             let file = resource.file();
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, file.file_type());
             assert_eq!(IMAGE_SIZE, file.file_size());
             assert_eq!("image.png", file.file_name());
-            assert!(file.is_temporary());
+            assert!(!file.is_temporary());
             assert!(!file.is_new());
 
             let mut reader = file.create_reader().await.unwrap();
@@ -460,11 +468,12 @@ async fn resource_upload_download_data() {
     {
         let id = {
             let resource =
-                datalith.put_resource_by_path(IMAGE_PATH, None::<&str>, None).await.unwrap();
+                datalith.put_resource_by_path(IMAGE_PATH, Some("image.png"), None).await.unwrap();
 
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
+            assert!(!resource.is_temporary());
 
             let file = resource.file();
             #[cfg(feature = "magic")]
@@ -472,7 +481,8 @@ async fn resource_upload_download_data() {
             assert_eq!(IMAGE_SIZE, file.file_size());
             assert_eq!("image.png", file.file_name());
             assert!(!file.is_temporary());
-            assert!(file.is_new());
+            // the previous temporary resource is existing, so it cannot generate a new file
+            assert!(!file.is_new());
 
             let mut reader = file.create_reader().await.unwrap();
             let mut buffer = Vec::with_capacity(file.file_size() as usize);
@@ -489,6 +499,7 @@ async fn resource_upload_download_data() {
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
+            assert!(!resource.is_temporary());
 
             let file = resource.file();
             #[cfg(feature = "magic")]
@@ -529,14 +540,16 @@ async fn resource_upload_download_data() {
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
+            assert!(resource.is_temporary());
 
             let file = resource.file();
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, file.file_type());
             assert_eq!(IMAGE_SIZE, file.file_size());
             assert_eq!("image.png", file.file_name());
-            assert!(file.is_temporary());
-            assert!(file.is_new());
+            assert!(!file.is_temporary());
+            // the previous temporary resource is existing, so it cannot generate a new file
+            assert!(!file.is_new());
 
             let mut reader = file.create_reader().await.unwrap();
             let mut buffer = Vec::with_capacity(file.file_size() as usize);
@@ -553,13 +566,14 @@ async fn resource_upload_download_data() {
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
+            assert!(resource.is_temporary());
 
             let file = resource.file();
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, file.file_type());
             assert_eq!(IMAGE_SIZE, file.file_size());
             assert_eq!("image.png", file.file_name());
-            assert!(file.is_temporary());
+            assert!(!file.is_temporary());
             assert!(!file.is_new());
 
             let mut reader = file.create_reader().await.unwrap();
@@ -585,6 +599,7 @@ async fn resource_upload_download_data() {
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
+            assert!(!resource.is_temporary());
 
             let file = resource.file();
             #[cfg(feature = "magic")]
@@ -592,7 +607,8 @@ async fn resource_upload_download_data() {
             assert_eq!(IMAGE_SIZE, file.file_size());
             assert_eq!("image.png", file.file_name());
             assert!(!file.is_temporary());
-            assert!(file.is_new());
+            // the previous temporary resource is existing, so it cannot generate a new file
+            assert!(!file.is_new());
 
             let mut reader = file.create_reader().await.unwrap();
             let mut buffer = Vec::with_capacity(file.file_size() as usize);
@@ -609,6 +625,7 @@ async fn resource_upload_download_data() {
             #[cfg(feature = "magic")]
             assert_eq!(&mime::IMAGE_PNG, resource.file_type());
             assert_eq!("image.png", resource.file_name());
+            assert!(!resource.is_temporary());
 
             let file = resource.file();
             #[cfg(feature = "magic")]
