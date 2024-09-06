@@ -208,18 +208,16 @@ impl Datalith {
                 )
                 .await?;
 
-            if original_file.is_new() {
-                (
-                    original_file.created_at(),
-                    original_file.file_name().to_string(),
-                    Some(original_file),
-                )
+            let (created_at, file_name) = if original_file.is_new() {
+                (original_file.created_at(), original_file.file_name().to_string())
             } else {
                 let created_at = Local::now();
                 let file_name = generate_file_name(file_name, file_path, created_at, &file_type);
 
-                (created_at, file_name, None)
-            }
+                (created_at, file_name)
+            };
+
+            (created_at, file_name, Some(original_file))
         } else {
             let created_at = Local::now();
             let file_name = generate_file_name(file_name, file_path, created_at, &file_type);
