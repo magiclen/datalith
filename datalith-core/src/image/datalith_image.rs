@@ -61,7 +61,7 @@ where {
 }
 
 impl DatalithImage {
-    /// Retrieve the file ID (UUID).
+    /// Retrieve the image ID (UUID).
     #[inline]
     pub const fn id(&self) -> Uuid {
         self.id

@@ -49,7 +49,7 @@ where {
 }
 
 impl DatalithResource {
-    /// Retrieve the file ID (UUID).
+    /// Retrieve the resource ID (UUID).
     #[inline]
     pub const fn id(&self) -> Uuid {
         self.id
