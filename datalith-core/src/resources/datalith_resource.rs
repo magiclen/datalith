@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::DatalithFile;
 
-/// A struct that represents an image.
+/// A struct that represents an resource.
 #[derive(Debug, Educe)]
 #[educe(PartialEq, Eq, Hash)]
 pub struct DatalithResource {
