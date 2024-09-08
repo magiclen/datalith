@@ -51,10 +51,21 @@ impl<'r> FromRequest<'r> for &'r FileLength {
                 Ok(content_length) => {
                     Outcome::Success(request.local_cache(|| FileLength(content_length)))
                 },
-                Err(error) => Outcome::Error((Status::NotFound, error)),
+                Err(error) => Outcome::Error((Status::BadRequest, error)),
             }
         } else {
-            Outcome::Forward(Status::NotFound)
+            let file_length: Option<&str> = request.headers().get("x-file-length").next(); // Only fetch the first one.
+
+            if let Some(file_length) = file_length {
+                match file_length.parse::<u64>() {
+                    Ok(file_length) => {
+                        Outcome::Success(request.local_cache(|| FileLength(file_length)))
+                    },
+                    Err(error) => Outcome::Error((Status::BadRequest, error)),
+                }
+            } else {
+                Outcome::Forward(Status::NotFound)
+            }
         }
     }
 }
