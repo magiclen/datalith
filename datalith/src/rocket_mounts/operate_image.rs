@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use validators::prelude::*;
 
 use super::{Boolean, ServerConfig};
-use crate::rocket_mounts::{operate::validate_content_length, rocket_utils::ContentLength};
+use crate::rocket_mounts::{operate::validate_content_length, rocket_utils::FileLength};
 
 #[post("/", format = "multipart/form-data", data = "<data>")]
 async fn upload(
@@ -114,7 +114,7 @@ async fn upload(
 async fn stream_upload(
     server_config: &State<ServerConfig>,
     datalith: &State<DatalithManager>,
-    content_length: Option<&ContentLength>,
+    file_length: Option<&FileLength>,
     file_name: Option<&str>,
     max_width: Option<u16>,
     max_height: Option<u16>,
@@ -122,7 +122,7 @@ async fn stream_upload(
     save_original_file: Option<Boolean>,
     data: Data<'_>,
 ) -> Result<RawJson<String>, Status> {
-    let expected_reader_length = validate_content_length(server_config, content_length)?;
+    let expected_reader_length = validate_content_length(server_config, file_length)?;
     let center_crop = parse_center_crop(center_crop)?;
     let save_original_file = save_original_file.map(|e| e.0).unwrap_or(true);
 

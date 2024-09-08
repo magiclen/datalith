@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use validators::prelude::*;
 
 use super::{Boolean, ServerConfig};
-use crate::rocket_mounts::rocket_utils::ContentLength;
+use crate::rocket_mounts::rocket_utils::FileLength;
 
 #[post("/", format = "multipart/form-data", data = "<data>")]
 async fn upload(
@@ -104,7 +104,7 @@ async fn stream_upload(
     server_config: &State<ServerConfig>,
     datalith: &State<DatalithManager>,
     content_type: Option<&ContentType>,
-    content_length: Option<&ContentLength>,
+    file_length: Option<&FileLength>,
     file_name: Option<&str>,
     file_type: Option<&str>,
     temporary: Option<Boolean>,
@@ -125,7 +125,7 @@ async fn stream_upload(
     };
     let mime_type = content_type.clone().map(|e| (e, FileTypeLevel::Manual));
 
-    let expected_reader_length = validate_content_length(server_config, content_length)?;
+    let expected_reader_length = validate_content_length(server_config, file_length)?;
 
     let temporary = temporary.map(|e| e.0).unwrap_or(false);
 
@@ -186,7 +186,7 @@ pub fn mounts(rocket: Rocket<Build>) -> Rocket<Build> {
 #[inline]
 pub fn validate_content_length(
     server_config: &State<ServerConfig>,
-    content_length: Option<&ContentLength>,
+    content_length: Option<&FileLength>,
 ) -> Result<u64, Status> {
     let max_file_size = server_config.max_file_size;
 

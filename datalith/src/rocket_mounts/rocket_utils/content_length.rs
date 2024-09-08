@@ -3,9 +3,9 @@ use std::num::ParseIntError;
 use rocket::{http::Status, outcome::Outcome, request, request::FromRequest, Request};
 
 #[derive(Debug, Clone, Default)]
-pub struct ContentLength(u64);
+pub struct FileLength(u64);
 
-impl ContentLength {
+impl FileLength {
     #[inline]
     pub const fn to_u64(&self) -> u64 {
         self.0
@@ -13,7 +13,7 @@ impl ContentLength {
 }
 
 #[rocket::async_trait]
-impl<'r> FromRequest<'r> for ContentLength {
+impl<'r> FromRequest<'r> for FileLength {
     type Error = ParseIntError;
 
     async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
@@ -22,16 +22,25 @@ impl<'r> FromRequest<'r> for ContentLength {
         if let Some(content_length) = content_length {
             match content_length.parse::<u64>() {
                 Ok(content_length) => Outcome::Success(Self(content_length)),
-                Err(error) => Outcome::Error((Status::NotFound, error)),
+                Err(error) => Outcome::Error((Status::BadRequest, error)),
             }
         } else {
-            Outcome::Forward(Status::NotFound)
+            let file_length: Option<&str> = request.headers().get("x-file-length").next(); // Only fetch the first one.
+
+            if let Some(file_length) = file_length {
+                match file_length.parse::<u64>() {
+                    Ok(file_length) => Outcome::Success(Self(file_length)),
+                    Err(error) => Outcome::Error((Status::BadRequest, error)),
+                }
+            } else {
+                Outcome::Forward(Status::NotFound)
+            }
         }
     }
 }
 
 #[rocket::async_trait]
-impl<'r> FromRequest<'r> for &'r ContentLength {
+impl<'r> FromRequest<'r> for &'r FileLength {
     type Error = ParseIntError;
 
     async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
@@ -40,7 +49,7 @@ impl<'r> FromRequest<'r> for &'r ContentLength {
         if let Some(content_length) = content_length {
             match content_length.parse::<u64>() {
                 Ok(content_length) => {
-                    Outcome::Success(request.local_cache(|| ContentLength(content_length)))
+                    Outcome::Success(request.local_cache(|| FileLength(content_length)))
                 },
                 Err(error) => Outcome::Error((Status::NotFound, error)),
             }
