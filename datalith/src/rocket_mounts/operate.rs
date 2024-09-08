@@ -85,8 +85,8 @@ async fn upload(
     } else {
         datalith.put_resource_by_path(file_field.path.as_path(), file_name, mime_type).await
     } {
-        Ok(file) => {
-            let value = datalith_resource_to_json_value(file);
+        Ok(resource) => {
+            let value = datalith_resource_to_json_value(resource);
 
             Ok(RawJson(serde_json::to_string(&value).unwrap()))
         },
@@ -146,8 +146,8 @@ async fn stream_upload(
             .put_resource_by_reader(stream, file_name, mime_type, Some(expected_reader_length))
             .await
     } {
-        Ok(file) => {
-            let value = datalith_resource_to_json_value(file);
+        Ok(resource) => {
+            let value = datalith_resource_to_json_value(resource);
 
             Ok(RawJson(serde_json::to_string(&value).unwrap()))
         },

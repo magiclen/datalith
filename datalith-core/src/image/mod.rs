@@ -24,7 +24,7 @@ use crate::{
     functions::get_file_name,
     guard::{DeleteGuard, TemporaryFileGuard},
     image::sync::ReadOnlyImageResource,
-    Datalith, DatalithFile, DatalithReadError, FileTypeLevel,
+    Datalith, DatalithFile, DatalithReadError, DatalithResource, FileTypeLevel,
 };
 
 pub static MIME_WEBP: Lazy<Mime> = Lazy::new(|| Mime::from_str("image/webp").unwrap());
@@ -272,6 +272,51 @@ impl Datalith {
             save_original_file,
         )
         .await
+    }
+
+    /// Create an image using a resource.
+    #[inline]
+    pub async fn put_image_by_resource(
+        &self,
+        resource: &DatalithResource,
+        max_width: Option<u16>,
+        max_height: Option<u16>,
+        center_crop: Option<CenterCrop>,
+    ) -> Result<DatalithImage, DatalithImageWriteError> {
+        let file = resource.file();
+        let reader = file.create_reader().await?;
+
+        self.put_image_by_reader(
+            reader,
+            Some(resource.file_name()),
+            max_width,
+            max_height,
+            center_crop,
+            true,
+            Some(file.file_size()),
+        )
+        .await
+    }
+
+    /// Convert a resource into an image.
+    #[inline]
+    pub async fn convert_resource_to_image(
+        &self,
+        resource: DatalithResource,
+        max_width: Option<u16>,
+        max_height: Option<u16>,
+        center_crop: Option<CenterCrop>,
+    ) -> Result<DatalithImage, DatalithImageWriteError> {
+        let image =
+            self.put_image_by_resource(&resource, max_width, max_height, center_crop).await?;
+
+        let resource_id = resource.id();
+
+        drop(resource);
+
+        let _ = self.delete_resource_by_id(resource_id).await;
+
+        Ok(image)
     }
 
     #[allow(clippy::too_many_arguments)]

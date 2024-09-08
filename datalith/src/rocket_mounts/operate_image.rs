@@ -96,8 +96,8 @@ async fn upload(
         )
         .await
     {
-        Ok(file) => {
-            let value = datalith_image_to_json_value(file);
+        Ok(image) => {
+            let value = datalith_image_to_json_value(image);
 
             Ok(RawJson(serde_json::to_string(&value).unwrap()))
         },
@@ -145,8 +145,8 @@ async fn stream_upload(
         )
         .await
     {
-        Ok(file) => {
-            let value = datalith_image_to_json_value(file);
+        Ok(image) => {
+            let value = datalith_image_to_json_value(image);
 
             Ok(RawJson(serde_json::to_string(&value).unwrap()))
         },
@@ -180,9 +180,47 @@ async fn delete(datalith: &State<DatalithManager>, id: Uuid) -> Result<&'static 
     }
 }
 
+#[delete("/<id>?convert-image&<max_width>&<max_height>&<center_crop>")]
+async fn convert_image(
+    datalith: &State<DatalithManager>,
+    id: Uuid,
+    max_width: Option<u16>,
+    max_height: Option<u16>,
+    center_crop: Option<&str>,
+) -> Result<RawJson<String>, Status> {
+    let center_crop = parse_center_crop(center_crop)?;
+
+    let resource = match datalith.get_resource_by_id(id).await {
+        Ok(Some(resource)) => resource,
+        Ok(None) => return Err(Status::NotFound),
+        Err(error) => {
+            rocket::error!("{error}");
+
+            return Err(Status::InternalServerError);
+        },
+    };
+
+    match datalith.convert_resource_to_image(resource, max_width, max_height, center_crop).await {
+        Ok(image) => {
+            let value = datalith_image_to_json_value(image);
+
+            Ok(RawJson(serde_json::to_string(&value).unwrap()))
+        },
+        Err(error) => {
+            rocket::error!("{error}");
+
+            if let DatalithImageWriteError::UnsupportedImageType = error {
+                Err(Status::BadRequest)
+            } else {
+                Err(Status::InternalServerError)
+            }
+        },
+    }
+}
+
 #[inline]
 pub fn mounts(rocket: Rocket<Build>) -> Rocket<Build> {
-    rocket.mount("/i/o", routes![upload, stream_upload, delete])
+    rocket.mount("/i/o", routes![upload, stream_upload, delete]).mount("/o", routes![convert_image])
 }
 
 #[inline]
