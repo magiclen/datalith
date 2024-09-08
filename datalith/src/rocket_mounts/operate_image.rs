@@ -104,7 +104,11 @@ async fn upload(
         Err(error) => {
             rocket::error!("{error}");
 
-            Err(Status::InternalServerError)
+            if let DatalithImageWriteError::UnsupportedImageType = error {
+                Err(Status::BadRequest)
+            } else {
+                Err(Status::InternalServerError)
+            }
         },
     }
 }
@@ -154,7 +158,11 @@ async fn stream_upload(
         Err(error) => {
             rocket::error!("{error}");
 
-            Err(Status::InternalServerError)
+            if let DatalithImageWriteError::UnsupportedImageType = error {
+                Err(Status::BadRequest)
+            } else {
+                Err(Status::InternalServerError)
+            }
         },
     }
 }
