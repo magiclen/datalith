@@ -314,9 +314,23 @@ impl Datalith {
 
         drop(resource);
 
-        let _ = self.delete_resource_by_id(resource_id).await;
+        match self.delete_resource_by_id(resource_id).await {
+            Ok(_) => Ok(image),
+            Err(error) => {
+                // fallback
 
-        Ok(image)
+                let image_id = image.id();
+
+                if let Err(error) = self.delete_image_by_id(image_id).await {
+                    tracing::warn!(
+                        "cannot fallback `convert_resource_to_image` (resource_id = \
+                         {resource_id}, image_id = {image_id}): {error}"
+                    );
+                }
+
+                Err(error.into())
+            },
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
