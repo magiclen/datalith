@@ -151,7 +151,7 @@ pub struct DatalithFileReader<'a> {
     file:  File,
 }
 
-impl<'a> AsyncRead for DatalithFileReader<'a> {
+impl AsyncRead for DatalithFileReader<'_> {
     #[inline]
     fn poll_read(
         mut self: Pin<&mut Self>,

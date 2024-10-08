@@ -17,13 +17,13 @@ pub(crate) struct MagicCookie<'a> {
     cookie: &'a Cookie<Load>,
 }
 
-impl<'a> Drop for MagicCookie<'a> {
+impl Drop for MagicCookie<'_> {
     fn drop(&mut self) {
         self.using.swap(false, Ordering::Relaxed);
     }
 }
 
-impl<'a> Deref for MagicCookie<'a> {
+impl Deref for MagicCookie<'_> {
     type Target = Cookie<Load>;
 
     #[inline]
