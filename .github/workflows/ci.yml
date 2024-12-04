@@ -88,7 +88,7 @@ jobs:
           - ubuntu-latest
           # - macos-latest
         toolchain:
-          - 1.75
+          - 1.83
         features:
           -
           - --no-default-features
