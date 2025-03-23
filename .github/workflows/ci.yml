@@ -53,10 +53,10 @@ jobs:
     name: Test ${{ matrix.toolchain }} on ${{ matrix.os }} (${{ matrix.features }})
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Install librsvg2 libwebp (Linux)
+      - name: Install librsvg2 libwebp libmagic (Linux)
         run: |
           sudo apt update
-          sudo apt install librsvg2-dev libwebp-dev
+          sudo apt install librsvg2-dev libwebp-dev libmagic-dev
         if: runner.os == 'Linux'
       - name: Install libwebp (macOS)
         run: |
@@ -95,10 +95,10 @@ jobs:
     name: Test ${{ matrix.toolchain }} on ${{ matrix.os }} (${{ matrix.features }})
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Install librsvg2 libwebp (Linux)
+      - name: Install librsvg2 libwebp libmagic (Linux)
         run: |
           sudo apt update
-          sudo apt install librsvg2-dev libwebp-dev
+          sudo apt install librsvg2-dev libwebp-dev libmagic-dev
         if: runner.os == 'Linux'
       - name: Install libwebp (macOS)
         run: |
