@@ -82,7 +82,7 @@ impl DatalithResponse {
                                 };
                                 let multiplier = v.len();
 
-                                (v.into_iter().last().unwrap(), multiplier)
+                                (v.into_iter().next_back().unwrap(), multiplier)
                             }
                         },
                         ResolutionType::Multiplier(multiplier) => {

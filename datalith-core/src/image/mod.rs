@@ -849,7 +849,7 @@ impl Datalith {
             };
 
             let (thumbnails, fallback_thumbnails) = {
-                let max_image_resolution_multiplier = (image_thumbnails_rows.len() + 1) / 2;
+                let max_image_resolution_multiplier = image_thumbnails_rows.len().div_ceil(2);
                 let mut thumbnails = Vec::with_capacity(max_image_resolution_multiplier);
                 let mut fallback_thumbnails = Vec::with_capacity(max_image_resolution_multiplier);
 
