@@ -267,8 +267,8 @@ impl Datalith {
             let sql_file = OpenOptions::new().write(true).open(sql_file_path.as_path()).await?;
 
             match sql_file.try_lock_exclusive() {
-                Ok(()) => (),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                Ok(true) => (),
+                Ok(false) => {
                     return Err(DatalithCreateError::AlreadyRun);
                 },
                 Err(error) => return Err(error.into()),

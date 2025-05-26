@@ -365,6 +365,7 @@ impl Datalith {
         let (input, input_width, input_height) = if let Some(center_crop) = center_crop {
             let config = PNGConfig {
                 crop: Some(center_crop),
+                respect_orientation: true,
                 ..PNGConfig::default()
             };
 
@@ -481,6 +482,7 @@ impl Datalith {
                         let config = WEBPConfig {
                             width,
                             height,
+                            respect_orientation: true,
                             quality: 80,
                             ..WEBPConfig::default()
                         };
@@ -538,6 +540,7 @@ impl Datalith {
                             let config = PNGConfig {
                                 width,
                                 height,
+                                respect_orientation: true,
                                 ..PNGConfig::default()
                             };
 
@@ -549,6 +552,7 @@ impl Datalith {
                             let config = JPGConfig {
                                 width,
                                 height,
+                                respect_orientation: true,
                                 quality: 70,
                                 force_to_chroma_quartered: true,
                                 ..JPGConfig::default()

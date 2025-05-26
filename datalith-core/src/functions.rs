@@ -12,7 +12,7 @@ use chrono::{DateTime, TimeZone};
 use mime::Mime;
 #[cfg(feature = "magic")]
 use once_cell::sync::Lazy;
-use rand::Rng;
+use rand::TryRngCore;
 use sha2::{Digest, Sha256};
 #[cfg(feature = "magic")]
 use tokio::task;
@@ -197,7 +197,7 @@ pub(crate) fn get_random_hash() -> [u8; 32] {
     let mut rng = rand::rngs::OsRng;
     let mut data = [0u8; 32];
 
-    rng.fill(&mut data);
+    rng.try_fill_bytes(&mut data).unwrap();
 
     data
 }
