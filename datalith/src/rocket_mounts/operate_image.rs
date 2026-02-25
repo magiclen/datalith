@@ -2,14 +2,14 @@ use datalith_core::{
     CenterCrop, DatalithImage, DatalithImageWriteError, DatalithManager, DatalithWriteError, Uuid,
 };
 use rocket::{
+    Build, Data, Rocket, State,
     http::{ContentType, Status},
     response::content::RawJson,
-    Build, Data, Rocket, State,
 };
 use rocket_multipart_form_data::{
     MultipartFormData, MultipartFormDataError, MultipartFormDataField, MultipartFormDataOptions,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use validators::prelude::*;
 
 use super::{Boolean, ServerConfig};

@@ -15,7 +15,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::{guard::OpenGuard, Datalith};
+use crate::{Datalith, guard::OpenGuard};
 
 /// A struct that represents a file.
 #[derive(Debug, Educe)]
@@ -119,7 +119,7 @@ impl DatalithFile {
 impl DatalithFile {
     /// Create an reader.
     #[inline]
-    pub async fn create_reader(&self) -> io::Result<DatalithFileReader> {
+    pub async fn create_reader(&self) -> io::Result<DatalithFileReader<'_>> {
         let file_path = self._datalith.get_file_path(self.id).await?;
 
         let file = File::open(file_path).await?;

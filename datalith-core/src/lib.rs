@@ -168,6 +168,8 @@ datalith.close().await;
 ```
 */
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 pub extern crate chrono;
 pub extern crate mime;
 pub extern crate uuid;
@@ -194,7 +196,7 @@ pub use functions::get_image_extension;
 pub use image::*;
 #[cfg(feature = "manager")]
 pub use manager::*;
-use mime::{Mime, APPLICATION_OCTET_STREAM};
+use mime::{APPLICATION_OCTET_STREAM, Mime};
 pub use rdb_pagination::{OrderMethod, OrderMethodValue, Pagination, PaginationOptions};
 pub use resources::*;
 

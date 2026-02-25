@@ -8,7 +8,7 @@ mod rocket_utils;
 
 use std::net::IpAddr;
 
-use rocket::{http::Status, Build, Config, Request, Rocket};
+use rocket::{Build, Config, Request, Rocket, http::Status};
 use validators::prelude::*;
 
 #[derive(Debug)]

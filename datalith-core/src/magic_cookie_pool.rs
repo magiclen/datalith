@@ -6,8 +6,8 @@ use std::{
 };
 
 use magic::{
-    cookie::{Flags, Load},
     Cookie,
+    cookie::{Flags, Load},
 };
 use tokio::time;
 
@@ -67,7 +67,7 @@ impl MagicCookiePool {
 }
 
 impl MagicCookiePool {
-    pub(crate) async fn acquire_cookie(&self) -> MagicCookie {
+    pub(crate) async fn acquire_cookie(&self) -> MagicCookie<'_> {
         loop {
             for (using, cookie) in self.cookies.iter() {
                 if using.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
@@ -83,7 +83,7 @@ impl MagicCookiePool {
         }
     }
 
-    pub(crate) fn acquire_cookie_sync(&self) -> MagicCookie {
+    pub(crate) fn acquire_cookie_sync(&self) -> MagicCookie<'_> {
         loop {
             for (using, cookie) in self.cookies.iter() {
                 if using.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()

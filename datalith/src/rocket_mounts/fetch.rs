@@ -1,9 +1,9 @@
 use datalith_core::DatalithManager;
-use rocket::{http::Status, serde::uuid::Uuid, Build, Rocket, State};
+use rocket::{Build, Rocket, State, http::Status, serde::uuid::Uuid};
 use rocket_cache_response::CacheResponse;
 use rocket_etag_if_none_match::EtagIfNoneMatch;
 
-use crate::rocket_mounts::{rocket_utils::DatalithResponse, Boolean};
+use crate::rocket_mounts::{Boolean, rocket_utils::DatalithResponse};
 
 #[get("/<id>?<download>")]
 async fn get(

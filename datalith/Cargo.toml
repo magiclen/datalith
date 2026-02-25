@@ -2,8 +2,8 @@
 name = "datalith"
 version = "0.1.0"
 authors = ["Magic Len <len@magiclen.org>"]
-edition = "2021"
-rust-version = "1.83"
+edition = "2024"
+rust-version = "1.88"
 repository = "https://github.com/magiclen/datalith"
 homepage = "https://magiclen.org/datalith"
 keywords = ["datalith", "sqlite", "storage", "file", "oss"]

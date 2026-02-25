@@ -1,18 +1,18 @@
 use std::{io::ErrorKind, str::FromStr};
 
 use datalith_core::{
-    mime::Mime, DatalithManager, DatalithResource, DatalithWriteError, FileTypeLevel,
+    DatalithManager, DatalithResource, DatalithWriteError, FileTypeLevel, mime::Mime,
 };
 use rocket::{
+    Build, Data, Rocket, State,
     http::{ContentType, Status},
     response::content::RawJson,
     serde::uuid::Uuid,
-    Build, Data, Rocket, State,
 };
 use rocket_multipart_form_data::{
     MultipartFormData, MultipartFormDataError, MultipartFormDataField, MultipartFormDataOptions,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use validators::prelude::*;
 
 use super::{Boolean, ServerConfig};

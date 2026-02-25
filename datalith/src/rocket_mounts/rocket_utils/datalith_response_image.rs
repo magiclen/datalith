@@ -1,11 +1,11 @@
 use std::{collections::HashMap, fmt::Write, path::Path};
 
-use datalith_core::{get_image_extension, mime, Datalith, DatalithReadError, Uuid, MIME_WEBP};
+use datalith_core::{Datalith, DatalithReadError, MIME_WEBP, Uuid, get_image_extension, mime};
 use rocket::{
     form,
     form::{FromFormField, ValueField},
 };
-use rocket_etag_if_none_match::{entity_tag::EntityTag, EtagIfNoneMatch};
+use rocket_etag_if_none_match::{EtagIfNoneMatch, entity_tag::EntityTag};
 
 use super::{DatalithResponse, ResponseData};
 
@@ -22,10 +22,10 @@ impl<'r> FromFormField<'r> for ResolutionType {
             return Ok(Self::Original);
         }
 
-        if let Some(v) = field.value.strip_suffix("x") {
-            if let Ok(v) = v.parse::<u8>() {
-                return Ok(Self::Multiplier(v));
-            }
+        if let Some(v) = field.value.strip_suffix("x")
+            && let Ok(v) = v.parse::<u8>()
+        {
+            return Ok(Self::Multiplier(v));
         }
 
         let mut errors = form::Errors::new();

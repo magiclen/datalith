@@ -1,5 +1,5 @@
 #[cfg(feature = "image-convert")]
-use std::sync::atomic::{AtomicU32, AtomicU8};
+use std::sync::atomic::{AtomicU8, AtomicU32};
 use std::{
     collections::{HashMap, HashSet},
     fmt::{self, Debug, Formatter},
@@ -9,8 +9,8 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -19,11 +19,11 @@ use chrono::prelude::*;
 use educe::Educe;
 use fs4::tokio::AsyncFileExt;
 use mime::Mime;
-use rdb_pagination::{prelude::*, Pagination, PaginationOptions, SqlJoin, SqlOrderByComponent};
+use rdb_pagination::{Pagination, PaginationOptions, SqlJoin, SqlOrderByComponent, prelude::*};
 use sha2::{Digest, Sha256};
 use sqlx::{
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteQueryResult},
     Acquire, Pool, Row, Sqlite,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteQueryResult},
 };
 use tokio::{
     fs,
@@ -35,13 +35,13 @@ use tokio::{
 pub use uuid::Uuid;
 
 use crate::{
+    DEFAULT_MIME_TYPE, DatalithCreateError, DatalithFile, DatalithReadError, DatalithWriteError,
     functions::{
-        allow_not_found_error, calculate_buffer_size, detect_file_type_by_buffer,
+        BUFFER_SIZE, allow_not_found_error, calculate_buffer_size, detect_file_type_by_buffer,
         detect_file_type_by_path, get_current_timestamp, get_file_name, get_hash_by_buffer,
-        get_hash_by_path, get_random_hash, BUFFER_SIZE,
+        get_hash_by_path, get_random_hash,
     },
     guard::{DeleteGuard, OpenGuard, PutGuard, TemporaryFileGuard},
-    DatalithCreateError, DatalithFile, DatalithReadError, DatalithWriteError, DEFAULT_MIME_TYPE,
 };
 
 /// The path to the SQLite DB file.
@@ -459,12 +459,11 @@ impl Datalith {
         result: Result<SqliteQueryResult, sqlx::Error>,
     ) -> Result<bool, sqlx::Error> {
         if let Err(error) = result {
-            if let sqlx::Error::Database(ref error) = error {
-                if let Some(code) = error.code() {
-                    if code.as_ref() == "1" {
-                        return Ok(true);
-                    }
-                }
+            if let sqlx::Error::Database(ref error) = error
+                && let Some(code) = error.code()
+                && code.as_ref() == "1"
+            {
+                return Ok(true);
             }
 
             return Err(error);
@@ -969,10 +968,10 @@ impl Datalith {
         let mut counter = 0usize;
 
         while let Some(result) = tasks.join_next().await {
-            if let Ok(result) = result.unwrap() {
-                if result {
-                    counter += 1;
-                }
+            if let Ok(result) = result.unwrap()
+                && result
+            {
+                counter += 1;
             }
         }
 
@@ -1430,12 +1429,11 @@ impl Datalith {
                 }
             },
             Err(error) => {
-                if let Some(error) = error.as_database_error() {
-                    if let Some(code) = error.code() {
-                        if code == "787" {
-                            return Ok(false);
-                        }
-                    }
+                if let Some(error) = error.as_database_error()
+                    && let Some(code) = error.code()
+                    && code == "787"
+                {
+                    return Ok(false);
                 }
 
                 return Err(error.into());

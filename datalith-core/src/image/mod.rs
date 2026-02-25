@@ -9,22 +9,22 @@ pub use datalith_image::*;
 pub use datalith_image_errors::*;
 use educe::Educe;
 use image_convert::{
-    compute_output_size, fetch_magic_wand, identify_ping, to_jpg, to_png, to_webp, Crop,
-    ImageResource, JPGConfig, MagickError, PNGConfig, WEBPConfig,
+    Crop, ImageResource, JPGConfig, MagickError, PNGConfig, WEBPConfig, compute_output_size,
+    fetch_magic_wand, identify_ping, to_jpg, to_png, to_webp,
 };
 use mime::Mime;
 use once_cell::sync::Lazy;
-use rdb_pagination::{prelude::*, Pagination, PaginationOptions, SqlJoin, SqlOrderByComponent};
+use rdb_pagination::{Pagination, PaginationOptions, SqlJoin, SqlOrderByComponent, prelude::*};
 use regex::Regex;
 use tokio::{io::AsyncRead, task, task::JoinSet};
 use uuid::Uuid;
 
 use crate::{
+    Datalith, DatalithFile, DatalithReadError, DatalithResource, FileTypeLevel,
     datalith::get_file_size_by_reader_and_copy_to_file,
     functions::get_file_name,
     guard::{DeleteGuard, TemporaryFileGuard},
     image::sync::ReadOnlyImageResource,
-    Datalith, DatalithFile, DatalithReadError, DatalithResource, FileTypeLevel,
 };
 
 pub static MIME_WEBP: Lazy<Mime> = Lazy::new(|| Mime::from_str("image/webp").unwrap());
@@ -51,11 +51,7 @@ impl CenterCrop {
     pub fn new(w: f64, h: f64) -> Option<Self> {
         let r = w / h;
 
-        if r.is_nan() || r.is_infinite() || r == 0f64 {
-            None
-        } else {
-            Some(Self(w, h))
-        }
+        if r.is_nan() || r.is_infinite() || r == 0f64 { None } else { Some(Self(w, h)) }
     }
 }
 
@@ -171,16 +167,20 @@ impl Datalith {
             None => {
                 return Err(DatalithImageWriteError::MagickError(MagickError(String::from(
                     "unsupported path encoding",
-                ))))
+                ))));
             },
         };
 
         // create the input image resource
         let input = ReadOnlyImageResource::from(ImageResource::Path(file_path_string));
 
+        println!("{input:?}");
+
         // read the image metadata
         let (input_width, input_height, file_type, has_alpha_channel) =
             self.read_image_metadata(input.clone()).await?;
+
+        println!("{file_type:?}");
 
         fn generate_file_name(
             file_name: Option<String>,
@@ -741,10 +741,14 @@ impl Datalith {
         &self,
         input: ReadOnlyImageResource,
     ) -> Result<(u16, u16, Mime, bool), DatalithImageWriteError> {
-        let ident = task::spawn_blocking(move || identify_ping(&input))
-            .await
-            .unwrap()
-            .map_err(|_| DatalithImageWriteError::UnsupportedImageType)?;
+        let ident = task::spawn_blocking(move || identify_ping(&input)).await.unwrap().map_err(
+            |error| {
+                println!("{error:?}");
+                DatalithImageWriteError::UnsupportedImageType
+            },
+        )?;
+
+        println!("{ident:?}");
 
         // check the image dimensions for width and height
         if ident.resolution.width > u16::MAX as u32 || ident.resolution.height > u16::MAX as u32 {

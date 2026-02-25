@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
 use datalith_core::{
+    Datalith, DatalithFile, DatalithReadError, ReadableDatalithFile, Uuid,
     chrono::{DateTime, Local},
     mime::Mime,
-    Datalith, DatalithFile, DatalithReadError, ReadableDatalithFile, Uuid,
 };
-use rocket::{http::Status, response, response::Responder, Request, Response};
-use rocket_etag_if_none_match::{entity_tag::EntityTag, EtagIfNoneMatch};
+use rocket::{Request, Response, http::Status, response, response::Responder};
+use rocket_etag_if_none_match::{EtagIfNoneMatch, entity_tag::EntityTag};
 
 #[derive(Debug)]
 pub struct ResponseData {
@@ -29,11 +29,7 @@ pub struct DatalithResponse {
 impl DatalithResponse {
     #[inline]
     pub const fn is_temporary(&self) -> bool {
-        if let Some(data) = self.data.as_ref() {
-            data.is_temporary
-        } else {
-            false
-        }
+        if let Some(data) = self.data.as_ref() { data.is_temporary } else { false }
     }
 }
 
