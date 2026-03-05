@@ -1,10 +1,10 @@
-ARG imagemagick_ver=7.1.1-36
+ARG imagemagick_ver=7.1.2-15
 
-FROM rust AS builder
+FROM rust:trixie AS builder
 
 RUN apt update && apt install -y libmagic-dev
 
-RUN apt install -y curl build-essential automake autopoint libtool intltool pkg-config cmake clang
+RUN apt install -y curl build-essential automake libtool pkg-config cmake git clang
 
 RUN mkdir /imagemagick_build
 
@@ -19,6 +19,7 @@ libgraphviz-dev \
 libheif-dev \
 libjbig-dev \
 libjpeg-dev \
+libdmr-dev \
 liblcms2-dev \
 liblqr-1-0-dev \
 liblzma-dev \
@@ -35,8 +36,7 @@ libwmf-dev \
 libxml2-dev \
 libzip-dev \
 zlib1g-dev \
-libzstd-dev \
-ghostscript
+libzstd-dev
 
 WORKDIR /build/ImageMagick
 
@@ -58,7 +58,7 @@ RUN PKG_CONFIG_PATH="/imagemagick_build/lib/pkgconfig" ./configure \
 --without-utilities \
 --enable-shared \
 --enable-zero-configuration \
---enable-hdri \
+--enable-hdri --with-quantum-depth=32 --enable-64bit-channel-masks \
 --with-fftw \
 --with-gslib \
 --with-rsvg \
@@ -77,12 +77,9 @@ COPY . .
 RUN cargo build --release
 
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
-RUN adduser --disabled-password \
-    --gecos "" \
-    --no-create-home \
-    user
+RUN useradd -M -U user && passwd -l user
 
 WORKDIR /app
 
@@ -91,41 +88,21 @@ RUN chown user:user /app
 RUN apt update && apt install -y libmagic1
 
 RUN apt install -y \
-ghostscript \
-libjbig0 \
-libtiff6 \
-libraqm0 \
-libjpeg62-turbo \
-libgs10 \
-liblqr-1-0 \
-libpng16-16 \
-libpstoedit0c2a \
 libdjvulibre21 \
 libfftw3-bin \
-libfontconfig1 \
-libfreetype6 \
-libheif1 \
-libwebpmux3 \
-libwebpdemux2 \
-libwebp7 \
-libwmflite-0.2-7 \
-libxext6 \
-liblzma5 \
-libbz2-1.0 \
-libopenexr-3-1-30 \
-libopenjp2-7 \
-libpangocairo-1.0-0 \
-libpango-1.0-0 \
-libraw20 \
-liblcms2-2 \
-librsvg2-2 \
-libglib2.0-0 \
-libcairo2 \
-libxml2 \
 libgvc6 \
-libcgraph6 \
-libzip4 \
-libgomp1
+libheif1 \
+liblcms2-2 \
+liblqr-1-0 \
+libopenexr-3-1-30 \
+libpango-1.0-0 \
+libraqm0 \
+libraw23t64 \
+librsvg2-2 \
+libwebp7 libwebpmux3 libwebpdemux2 \
+libwmflite-0.2-7 \
+libzip5 \
+libpstoedit0t64
 
 RUN rm -rf /var/lib/apt/lists/*
 

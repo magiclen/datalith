@@ -1,4 +1,4 @@
-FROM rust AS builder
+FROM rust:trixie AS builder
 
 RUN apt update && apt install -y libmagic-dev
 
@@ -9,12 +9,9 @@ COPY . .
 RUN cargo build --release --no-default-features --features magic
 
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
-RUN adduser --disabled-password \
-    --gecos "" \
-    --no-create-home \
-    user
+RUN useradd -M -U user && passwd -l user
 
 WORKDIR /app
 
