@@ -174,13 +174,9 @@ impl Datalith {
         // create the input image resource
         let input = ReadOnlyImageResource::from(ImageResource::Path(file_path_string));
 
-        println!("{input:?}");
-
         // read the image metadata
         let (input_width, input_height, file_type, has_alpha_channel) =
             self.read_image_metadata(input.clone()).await?;
-
-        println!("{file_type:?}");
 
         fn generate_file_name(
             file_name: Option<String>,
@@ -741,14 +737,10 @@ impl Datalith {
         &self,
         input: ReadOnlyImageResource,
     ) -> Result<(u16, u16, Mime, bool), DatalithImageWriteError> {
-        let ident = task::spawn_blocking(move || identify_ping(&input)).await.unwrap().map_err(
-            |error| {
-                println!("{error:?}");
-                DatalithImageWriteError::UnsupportedImageType
-            },
-        )?;
-
-        println!("{ident:?}");
+        let ident = task::spawn_blocking(move || identify_ping(&input))
+            .await
+            .unwrap()
+            .map_err(|_error| DatalithImageWriteError::UnsupportedImageType)?;
 
         // check the image dimensions for width and height
         if ident.resolution.width > u16::MAX as u32 || ident.resolution.height > u16::MAX as u32 {
