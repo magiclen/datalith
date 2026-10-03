@@ -18,7 +18,7 @@ cd "$build_dir/ImageMagick-$version"
 make -j"$(nproc)"
 sudo make install
 # Run the tests with the same security policy as the Docker image.
-sudo install -m 644 "$script_dir/../../imagemagick/policy.xml" /usr/local/etc/ImageMagick-7/policy.xml
+sudo install -m 644 "$script_dir/../../datalith-core/src/service/image_policy.xml" /usr/local/etc/ImageMagick-7/policy.xml
 sudo ldconfig
 magick -version
 ffmpeg -version

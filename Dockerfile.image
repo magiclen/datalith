@@ -38,7 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && mkdir -p /app/data /app/tmp && chown -R datalith:datalith /app
 
 COPY --from=builder /opt/imagemagick /opt/imagemagick
-COPY imagemagick/policy.xml /opt/imagemagick/etc/ImageMagick-7/policy.xml
+COPY datalith-core/src/service/image_policy.xml /opt/imagemagick/etc/ImageMagick-7/policy.xml
 COPY --from=builder /build/target/release/datalith /usr/local/bin/datalith
 ENV PATH=/opt/imagemagick/bin:$PATH
 ENV LD_LIBRARY_PATH=/opt/imagemagick/lib

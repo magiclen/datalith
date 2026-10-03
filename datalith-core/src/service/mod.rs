@@ -3,6 +3,8 @@ mod archive;
 mod image_processor;
 pub(crate) mod migration;
 mod store;
+#[cfg(feature = "image-convert")]
+mod svg;
 mod tasks;
 mod types;
 
@@ -71,6 +73,10 @@ impl DatalithService {
         {
             return Err(ServiceError::Invalid("invalid service limits".into()));
         }
+        #[cfg(feature = "image-convert")]
+        tokio::task::spawn_blocking(image_processor::configure_resources)
+            .await
+            .map_err(|error| ServiceError::Internal(error.to_string()))??;
         if datalith
             .0
             ._service_active

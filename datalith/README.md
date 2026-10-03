@@ -115,6 +115,10 @@ JPEG uses progressive encoding, and PNG and GIF use interlacing.
 WebP does not provide the same kind of progressive display.
 APNG decoding needs an FFmpeg delegate, and frame delays are rounded to 10 ms.
 GIF frames are not optimized again after conversion.
+SVG and SVGZ support embedded images and internal references, but external image paths and URLs make the task fail.
+SVG XML and embedded data share a 64 MiB limit, with at most 32 nested SVG images; the image pixel limits still apply.
+SVG text uses installed system fonts.
+SVGZ originals use `application/gzip` and keep the uploaded bytes.
 
 The original file is kept by default.
 To process a saved original into new outputs, send `{"image":{...}}` to `POST /api/v1/media/{id}/tasks`.

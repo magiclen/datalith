@@ -30,6 +30,9 @@ The project uses Rust edition 2024 and requires Rust 1.94 or later.
 CI checks the minimum supported Rust version (MSRV) with Rust 1.94.1.
 MIME detection needs the libmagic development package.
 Image support also needs ImageMagick development headers, pkg-config, and Clang.
+For a musl build with MIME detection, use a musl build of libmagic and set `MAGIC_DIR` and `MAGIC_STATIC=1`.
+The ImageMagick build variables do not configure libmagic.
+Use `--no-default-features --features image-convert` to keep image processing without native MIME detection.
 The ImageMagick version range supported by `magick_rust` is `>= 7.1.1, < 7.2`.
 
 ```sh
@@ -48,7 +51,16 @@ ImageMagick must support PNG, JPEG, WebP, and GIF.
 Animated WebP needs libwebpmux, and APNG needs an ImageMagick coder and an FFmpeg delegate.
 A delegate is an external program that ImageMagick calls to read or write a format.
 Keep both the ImageMagick shared libraries and its configuration directory when you deploy the service.
-The Docker image and CI install `imagemagick/policy.xml`, an ImageMagick security policy that blocks the formats that need Ghostscript (PostScript, EPS, PDF, PCL, and XPS); use it for other deployments too.
+The service applies the built-in policy from `datalith-core/src/service/image_policy.xml` before it starts its workers.
+This also works with static, zero-configuration ImageMagick builds that ignore external XML files.
+Startup fails if ImageMagick cannot apply the required policy.
+The Docker image and CI install the same policy for command-line tools.
+It blocks formats that need Ghostscript, such as PostScript, EPS, PDF, PCL, and XPS.
+SVG and SVGZ files are rendered with `resvg`, then passed to `image-convert` for the usual output formats.
+External image paths and URLs are rejected, including those in embedded SVG images.
+SVG text uses installed system fonts; embedded raster images and internal references are supported.
+SVG XML and embedded data share a 64 MiB limit, with at most 32 nested SVG images; image pixel limits also apply.
+SVGZ originals keep their compressed bytes and use the `application/gzip` MIME type.
 APNG decoding and the image cache need a writable temporary directory.
 
 The default image limits are 50 million pixels per frame, 500 frames, 100 million decoded pixels in total, and 16 named image settings.
@@ -110,7 +122,8 @@ Successful tasks remove their temporary input and work files right away.
 Failed and cancelled tasks keep their input for retry, for seven days by default.
 Finished task records and exported archives use the same retention period.
 Unused files are removed only after their database references and active readers are gone.
-Cleanup runs again if an earlier cleanup was interrupted.
+Regular cleanup checks released storage IDs and retries content that is still open.
+A full scan runs at startup and once per hour to find files left by interrupted work.
 
 ## Import and export
 

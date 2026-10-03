@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    ffi::CString,
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -12,7 +13,7 @@ use std::{
 use image_convert::{
     Crop, GIFConfig, ImageResource, JPGConfig, PNGConfig, WEBPConfig, compute_output_size,
     fetch_magic_wand, identify_ping, identify_read,
-    magick_rust::{MagickWand, ResourceType},
+    magick_rust::{MagickWand, ResourceType, bindings},
     to_gif, to_jpg, to_png, to_webp,
 };
 use uuid::Uuid;
@@ -103,11 +104,12 @@ pub(crate) fn validate_options(
     Ok(())
 }
 
-fn configure_resources() -> Result<(), ServiceError> {
+pub(super) fn configure_resources() -> Result<(), ServiceError> {
     static CONFIGURED: OnceLock<Result<(), String>> = OnceLock::new();
     CONFIGURED
         .get_or_init(|| {
             image_convert::start_call_once();
+            configure_policy()?;
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             for (kind, ceiling) in [
                 (ResourceType::Memory, 256 * 1024 * 1024),
@@ -125,7 +127,42 @@ fn configure_resources() -> Result<(), ServiceError> {
         .copied()
 }
 
-fn check_dimensions(
+fn configure_policy() -> Result<(), String> {
+    let policy =
+        CString::new(include_str!("image_policy.xml")).map_err(|error| error.to_string())?;
+    // The private wand is created and freed here, and the policy string lives through the call.
+    let accepted = unsafe {
+        let wand = bindings::NewMagickWand();
+        if wand.is_null() {
+            return Err("Cannot create an ImageMagick policy wand.".into());
+        }
+        let accepted = bindings::MagickSetSecurityPolicy(wand, policy.as_ptr());
+        bindings::DestroyMagickWand(wand);
+        accepted == bindings::MagickBooleanType::MagickTrue
+    };
+    if !accepted {
+        return Err("ImageMagick rejected the image security policy.".into());
+    }
+    for coder in [
+        c"PS", c"EPS", c"PDF", c"PCL", c"XPS", c"MSL", c"TEXT", c"HTTP", c"HTTPS", c"SVG", c"SVGZ",
+        c"MSVG", c"RSVG",
+    ] {
+        // ImageMagick is initialized, and each name is a static C string.
+        let allowed = unsafe {
+            bindings::IsRightsAuthorized(
+                bindings::PolicyDomain::Coder,
+                bindings::PolicyRights::Read,
+                coder.as_ptr(),
+            )
+        };
+        if allowed != bindings::MagickBooleanType::MagickFalse {
+            return Err(format!("ImageMagick did not block {}.", coder.to_string_lossy()));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn check_dimensions(
     width: u64,
     height: u64,
     frames: u64,
@@ -208,8 +245,10 @@ pub(crate) fn process_image(
     check_cancel(cancel)?;
     reject_ghostscript_formats(input)?;
     configure_resources()?;
+    let svg = super::svg::render(input, output_dir, limits, cancel)?;
+    let source = svg.as_ref().map_or(input, |svg| svg.path.as_path());
     let input = ImageResource::Path(
-        input
+        source
             .to_str()
             .ok_or_else(|| ServiceError::Invalid("The image path is not UTF-8.".into()))?
             .to_owned(),
@@ -232,12 +271,16 @@ pub(crate) fn process_image(
     let frame_count = u32::try_from(metadata.number_of_frames).map_err(image_error)?;
     let animated = frame_count > 1
         && matches!(metadata.format.as_str(), "GIF" | "WEBP" | "PNG" | "APNG" | "MNG");
-    let original_mime = match ping.format.as_str() {
-        "JPG" | "JPEG" => "image/jpeg".into(),
-        "APNG" | "PNG" => "image/png".into(),
-        "SVG" => "image/svg+xml".into(),
-        "ICO" | "ICON" | "CUR" => "image/vnd.microsoft.icon".into(),
-        other => format!("image/{}", other.to_ascii_lowercase()),
+    let original_mime = if let Some(svg) = &svg {
+        svg.mime.into()
+    } else {
+        match ping.format.as_str() {
+            "JPG" | "JPEG" => "image/jpeg".into(),
+            "APNG" | "PNG" => "image/png".into(),
+            "SVG" => "image/svg+xml".into(),
+            "ICO" | "ICON" | "CUR" => "image/vnd.microsoft.icon".into(),
+            other => format!("image/{}", other.to_ascii_lowercase()),
+        }
     };
     wand.reset_iterator();
     let mut max_width = 0;

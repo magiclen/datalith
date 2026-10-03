@@ -1910,6 +1910,7 @@
       },
       "ImageOptions": {
         "type": "object",
+        "description": "SVG and SVGZ use a renderer that does not load external images. SVG XML and embedded data share a 64 MiB limit, with at most 32 nested SVG images. SVGZ originals keep their compressed bytes and use application/gzip.",
         "properties": {
           "variants": {
             "type": "array",
@@ -1983,7 +1984,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "The original file must be available. A single-use source returns 409. The result keeps the source expiry time and is not saved if that time has passed."
+        "description": "The original file must be available for a new task. A repeated request with the same idempotency key, source ID, and options returns the existing task even after the source is deleted or expires. A single-use source returns 409. The result keeps the source expiry time and is not saved if that time has passed."
       },
       "ExportOptions": {
         "type": "object",

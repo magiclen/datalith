@@ -36,6 +36,8 @@ rand = "0.10"
 trim-in-place = "0.2"
 
 image-convert = { version = "0.23", optional = true }
+resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"], optional = true }
+flate2 = { version = "1", optional = true }
 regex = { version = "1", optional = true }
 
 serde.workspace = true
@@ -54,7 +56,7 @@ slash-formatter = "3"
 [features]
 default = ["magic", "image-convert", "manager"]
 magic = ["dep:magic"]
-image-convert = ["dep:image-convert", "dep:regex"]
+image-convert = ["dep:image-convert", "dep:regex", "dep:resvg", "dep:flate2"]
 manager = ["dep:tokio-cron-scheduler"]
 
 [package.metadata.docs.rs]

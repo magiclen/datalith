@@ -16,6 +16,20 @@ const GIF: &[u8] = include_bytes!("data/media-animation.gif");
 const APNG: &[u8] = include_bytes!("data/media-animation.png");
 const ORIENTED_JPEG: &[u8] = include_bytes!("data/media-orientation.jpg");
 
+async fn finished(service: &DatalithService, id: datalith_core::Uuid) -> datalith_core::Task {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let task = service.get_task(id).await.unwrap().unwrap();
+            if task.status.is_terminal() {
+                break task;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
 async fn upload(service: &DatalithService, bytes: &[u8], image: ImageOptions) -> Media {
     let task = service
         .submit_upload(
@@ -30,19 +44,90 @@ async fn upload(service: &DatalithService, bytes: &[u8], image: ImageOptions) ->
         )
         .await
         .unwrap();
-    let done = tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            let task = service.get_task(task.id).await.unwrap().unwrap();
-            if task.status.is_terminal() {
-                break task;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    let done = finished(service, task.id).await;
     assert_eq!(TaskStatus::Succeeded, done.status, "{:?}", done.error);
     serde_json::from_value(done.result.unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn svg_keeps_embedded_images_and_blocks_external_images() {
+    use std::io::Write;
+
+    let directory = tempfile::tempdir().unwrap();
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="20" height="10"><defs><linearGradient id="paint"><stop stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient></defs><rect width="20" height="10" fill="url(#paint)"/><image x="10" width="10" height="10" xlink:href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAADklEQVR4nGNg+A+FMAYAQ84H+fei4u8AAAAASUVORK5CYII="/></svg>"##;
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gzip.write_all(svg).unwrap();
+    let compressed = gzip.finish().unwrap();
+    for (input, mime) in
+        [(svg.as_slice(), "image/svg+xml"), (compressed.as_slice(), "application/gzip")]
+    {
+        let media = upload(&service, input, ImageOptions::default()).await;
+        assert_eq!(mime, media.original.as_ref().unwrap().file_type);
+        let png = media.variants.iter().find(|variant| variant.format == "png").unwrap();
+        assert_eq!((20, 10), (png.width, png.height));
+        let bytes = variant_bytes(&service, &media, png).await;
+        let pixels = resvg::tiny_skia::Pixmap::decode_png(&bytes).unwrap();
+        let pixel = pixels.pixel(15, 5).unwrap();
+        assert_eq!((0, 255, 0, 255), (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()));
+        let metadata = identify_ping(&ImageResource::Data(bytes)).unwrap();
+        assert_eq!((20, 10), (metadata.resolution.width, metadata.resolution.height));
+    }
+    let canary = directory.path().join("canary.png");
+    tokio::fs::write(&canary, include_bytes!("data/image.png")).await.unwrap();
+    for href in [canary.to_str().unwrap(), "https://example.invalid/private.png"] {
+        let external = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="20" height="10"><image width="20" height="10" xlink:href="{href}"/></svg>"#
+        );
+        let task = service
+            .submit_upload(
+                external.as_bytes(),
+                UploadOptions {
+                    kind: MediaKind::Image,
+                    ..UploadOptions::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let done = finished(&service, task.id).await;
+        assert_eq!(TaskStatus::Failed, done.status);
+        assert_eq!(
+            "SVG images cannot reference external files or URLs.",
+            done.error.unwrap().message
+        );
+        assert!(service.get_media(task.id).await.unwrap().is_none());
+        let encoded: String = external.bytes().map(|byte| format!("%{byte:02X}")).collect();
+        let nested = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="20" height="10"><image width="20" height="10" xlink:href="data:image/svg+xml,{encoded}"/></svg>"#
+        );
+        let task = service
+            .submit_upload(
+                nested.as_bytes(),
+                UploadOptions {
+                    kind: MediaKind::Image,
+                    ..UploadOptions::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let done = finished(&service, task.id).await;
+        assert_eq!(TaskStatus::Failed, done.status);
+        assert_eq!(
+            "SVG images cannot reference external files or URLs.",
+            done.error.unwrap().message
+        );
+    }
+    // Native SVG decoding must stay blocked even when ImageMagick ignores external policy files.
+    let wand = image_convert::magick_rust::MagickWand::new();
+    assert!(wand.read_image_blob(svg).is_err());
+    service.close().await.unwrap();
 }
 
 async fn variant_bytes(service: &DatalithService, media: &Media, variant: &Variant) -> Vec<u8> {

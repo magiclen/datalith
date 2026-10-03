@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Datalith accepts every image format of ImageMagick except the ones that run Ghostscript, which has a long history of sandbox escapes. -->
-<!-- The URL and TEXT coders are blocked too, so that an SVG image cannot make ImageMagick fetch a URL or read a local file; uploads never use them directly. -->
+<!-- SVG files use resvg with external images disabled; ImageMagick must not decode SVG or its delegates. -->
 <policymap>
   <policy domain="path" rights="none" pattern="@*"/>
   <policy domain="coder" rights="none" pattern="{AI,EPDF,EPI,EPS,EPS2,EPS3,EPSF,EPSI,EPT,EPT2,EPT3,PCL,PDF,PDFA,POCKETMOD,PS,PS2,PS3,XPS}"/>
   <policy domain="module" rights="none" pattern="{EPT,PCL,PDF,PS,PS2,PS3,XPS}"/>
-  <policy domain="delegate" rights="none" pattern="{gs,gxps,pcl6}"/>
+  <policy domain="delegate" rights="none" pattern="{gs,gxps,pcl6,svg:decode}"/>
   <policy domain="coder" rights="none" pattern="{EPHEMERAL,FTP,HTTP,HTTPS,MSL,TEXT,URL}"/>
+  <policy domain="coder" rights="none" pattern="{SVG,SVGZ,MSVG,RSVG}"/>
 </policymap>

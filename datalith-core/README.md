@@ -98,6 +98,11 @@ Every size has a WebP output.
 A still image also gets interlaced PNG when it has an alpha channel, or progressive JPEG otherwise.
 GIF, WebP, and APNG animations get animated WebP and interlaced GIF, plus a still PNG or JPEG of the first full frame.
 The original file is kept by default.
+SVG and SVGZ use `resvg` without external images; the usual WebP and PNG outputs are then created with `image-convert`.
+Installed system fonts, embedded raster images, and internal references are supported.
+SVG XML and embedded data share a 64 MiB limit, with at most 32 nested SVG images.
+The image pixel limits also apply to embedded images.
+SVGZ originals keep their compressed bytes and use `application/gzip`.
 
 `submit_process` creates new media from a saved original and leaves the source media available.
 It rejects single-use sources.
@@ -106,6 +111,7 @@ Processing does not extend its lifetime, and a result that has already expired i
 An image without an original cannot be processed into new sizes.
 
 Each image worker owns its MagickWand and does not share it with other threads.
+Starting a service sets the required ImageMagick policy for the whole process, including static builds.
 `ImageLimits` controls pixels per frame, frame count, total decoded pixels, and the number of named settings.
 See the [build and deployment guide](../README.md) for native libraries, resource limits, and animation timing limits.
 
