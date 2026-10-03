@@ -23,10 +23,8 @@ anyhow = "1"
 tokio.workspace = true
 
 serde_json.workspace = true
-serde.workspace = true
-tracing.workspace = true
 url-escape = "0.1"
-byte-unit = { version = "5", features = ["serde"]}
+byte-unit = "5"
 
 rocket = { version = "0.5", features = ["uuid", "json"]}
 rocket-multipart-form-data = "0.11"

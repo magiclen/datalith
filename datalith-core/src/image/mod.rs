@@ -5,7 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::Path,
     str::FromStr,
-    sync::atomic::Ordering,
+    sync::{LazyLock, atomic::Ordering},
 };
 
 use chrono::{DateTime, Local};
@@ -17,7 +17,6 @@ use image_convert::{
     fetch_magic_wand, identify_ping, to_jpg, to_png, to_webp,
 };
 use mime::Mime;
-use once_cell::sync::Lazy;
 use rdb_pagination::{Pagination, PaginationOptions, SqlJoin, SqlOrderByComponent, prelude::*};
 use regex::Regex;
 use tokio::{io::AsyncRead, task, task::JoinSet};
@@ -30,7 +29,7 @@ use crate::{
     guard::{DeleteGuard, TemporaryFileGuard},
 };
 
-pub static MIME_WEBP: Lazy<Mime> = Lazy::new(|| Mime::from_str("image/webp").unwrap());
+pub static MIME_WEBP: LazyLock<Mime> = LazyLock::new(|| Mime::from_str("image/webp").unwrap());
 
 /// Sort options for image queries.
 #[derive(Debug, Clone, Educe, OrderByOptions)]
@@ -595,8 +594,8 @@ impl Datalith {
 
                 let image_stem = Path::new(image_name).file_stem().unwrap().to_str().unwrap();
 
-                static RE_STEM: Lazy<Regex> =
-                    Lazy::new(|| Regex::new(r"(.*?)(?:@\d+x)?$").unwrap());
+                static RE_STEM: LazyLock<Regex> =
+                    LazyLock::new(|| Regex::new(r"(.*?)(?:@\d+x)?$").unwrap());
 
                 let captures = RE_STEM.captures(image_stem).unwrap();
 

@@ -1,5 +1,3 @@
-#[cfg(feature = "magic")]
-use std::str::FromStr;
 use std::{
     io,
     io::ErrorKind,
@@ -7,11 +5,11 @@ use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
+#[cfg(feature = "magic")]
+use std::{str::FromStr, sync::LazyLock};
 
 use chrono::{DateTime, TimeZone};
 use mime::Mime;
-#[cfg(feature = "magic")]
-use once_cell::sync::Lazy;
 use rand::TryRng;
 use sha2::{Digest, Sha256};
 #[cfg(feature = "magic")]
@@ -26,8 +24,11 @@ use crate::magic_cookie_pool::MagicCookiePool;
 pub(crate) const BUFFER_SIZE: usize = 64 * 1024;
 
 #[cfg(feature = "magic")]
-static MAGIC_COOKIE: Lazy<Option<MagicCookiePool>> =
-    Lazy::new(|| MagicCookiePool::new(num_cpus::get() * 2));
+static MAGIC_COOKIE: LazyLock<Option<MagicCookiePool>> = LazyLock::new(|| {
+    let parallelism = std::thread::available_parallelism().map_or(1, |count| count.get());
+
+    MagicCookiePool::new(parallelism * 2)
+});
 
 #[cfg(feature = "magic")]
 pub(crate) async fn detect_file_type_by_buffer(file_data: impl AsRef<[u8]>) -> Option<Mime> {

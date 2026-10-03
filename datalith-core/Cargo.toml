@@ -21,11 +21,9 @@ tracing.workspace = true
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "chrono", "uuid"] }
 rdb-pagination = { version = "0.3", features = ["sqlite"] }
 
-num_cpus = "1"
 chrono.workspace = true
 
 educe = { version = "0.8", default-features = false, features = ["Debug", "Default", "PartialEq", "Eq", "Hash"] }
-once_cell = { version = "1", optional = true }
 
 sha2 = "0.11"
 mime = "0.3"
@@ -38,7 +36,6 @@ rand = "0.10"
 trim-in-place = "0.2"
 
 image-convert = { version = "0.23", optional = true }
-rc-u8-reader = { version = "2", optional = true }
 regex = { version = "1", optional = true }
 
 serde.workspace = true
@@ -56,8 +53,8 @@ slash-formatter = "3"
 
 [features]
 default = ["magic", "image-convert", "manager"]
-magic = ["dep:magic", "dep:once_cell"]
-image-convert = ["dep:image-convert", "dep:rc-u8-reader", "dep:regex"]
+magic = ["dep:magic"]
+image-convert = ["dep:image-convert", "dep:regex"]
 manager = ["dep:tokio-cron-scheduler"]
 
 [package.metadata.docs.rs]
