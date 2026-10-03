@@ -7,7 +7,7 @@ mod tasks;
 mod types;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -52,8 +52,7 @@ pub(super) struct ServiceInner {
     wakeup:         Arc<Notify>,
     stopping:       Arc<Notify>,
     shutdown:       AtomicBool,
-    // Set when a stored file loses its last reference, so that the maintenance task scans the file directory.
-    released_files: AtomicBool,
+    released_files: Mutex<HashSet<Uuid>>,
     cancellations:  Mutex<HashMap<Uuid, Arc<AtomicBool>>>,
     workers:        AsyncMutex<Vec<JoinHandle<()>>>,
     writes:         RwLock<()>,
@@ -86,7 +85,7 @@ impl DatalithService {
             wakeup: Arc::new(Notify::new()),
             stopping: Arc::new(Notify::new()),
             shutdown: AtomicBool::new(false),
-            released_files: AtomicBool::new(false),
+            released_files: Mutex::new(HashSet::new()),
             cancellations: Mutex::new(HashMap::new()),
             workers: AsyncMutex::new(Vec::new()),
             writes: RwLock::new(()),

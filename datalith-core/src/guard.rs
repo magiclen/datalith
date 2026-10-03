@@ -115,6 +115,24 @@ impl Drop for DeleteGuard {
 }
 
 impl DeleteGuard {
+    pub fn try_acquire_multiple(datalith: Datalith, ids: &HashSet<Uuid>) -> Option<Vec<Self>> {
+        let mut lifecycle = datalith.0._file_lifecycle.lock().unwrap();
+        if ids
+            .iter()
+            .any(|id| lifecycle.deleting.contains(id) || lifecycle.opening.contains_key(id))
+        {
+            return None;
+        }
+        let mut guards = Vec::with_capacity(ids.len());
+        for id in ids {
+            lifecycle.deleting.insert(*id);
+            guards.push(Self {
+                _datalith: datalith.clone(), id: *id
+            });
+        }
+        Some(guards)
+    }
+
     pub async fn new(datalith: Datalith, id: impl Into<Uuid>) -> Self {
         let id = id.into();
         loop {

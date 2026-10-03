@@ -13,16 +13,17 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use sqlx::Row;
+use sqlx::{QueryBuilder, Row, Sqlite};
 use uuid::Uuid;
 
 use super::{
     DatalithService, ExportOptions, Media, MediaFile, PreparedFile, ServiceError,
     migration::content_path,
 };
-use crate::guard::OpenGuard;
+use crate::{PATH_FILE_DIRECTORY, guard::OpenGuard};
 
 const MAX_MANIFEST_SIZE: u64 = 64 * 1024 * 1024;
+const QUERY_BATCH_SIZE: usize = 400;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,36 +59,81 @@ impl DatalithService {
         check_cancelled(&cancel)?;
         let mutation = self.0.mutations.lock().await;
         let now = Utc::now();
-        let rows = sqlx::query(
-            "SELECT id, metadata FROM media WHERE (expires_at IS NULL OR expires_at > ?) AND \
-             consumed_at IS NULL ORDER BY id",
-        )
-        .bind(now.timestamp_millis())
-        .fetch_all(&self.0.datalith.0.db)
-        .await?;
         let requested = options.ids.map(|ids| ids.into_iter().collect::<HashSet<_>>());
-        let mut media = Vec::new();
-        for row in rows {
-            let id: Uuid = row.try_get("id")?;
-            if requested.as_ref().is_none_or(|ids| ids.contains(&id)) {
-                media.push(serde_json::from_str::<Media>(row.try_get("metadata")?)?);
+        let rows = if let Some(ids) = &requested {
+            let ids: Vec<_> = ids.iter().copied().collect();
+            let mut rows = Vec::new();
+            for ids in ids.chunks(QUERY_BATCH_SIZE) {
+                check_cancelled(&cancel)?;
+                let mut query = QueryBuilder::<Sqlite>::new(
+                    "SELECT metadata FROM media WHERE consumed_at IS NULL AND (expires_at IS NULL \
+                     OR expires_at > ",
+                );
+                query.push_bind(now.timestamp_millis()).push(") AND id IN (");
+                let mut values = query.separated(",");
+                for id in ids {
+                    values.push_bind(*id);
+                }
+                values.push_unseparated(")");
+                rows.extend(query.build().fetch_all(&self.0.datalith.0.db).await?);
             }
-        }
-        if requested.as_ref().is_some_and(|ids| ids.len() != media.len()) {
+            rows
+        } else {
+            sqlx::query(
+                "SELECT metadata FROM media WHERE (expires_at IS NULL OR expires_at > ?) AND \
+                 consumed_at IS NULL",
+            )
+            .bind(now.timestamp_millis())
+            .fetch_all(&self.0.datalith.0.db)
+            .await?
+        };
+        if requested.as_ref().is_some_and(|ids| ids.len() != rows.len()) {
             return Err(ServiceError::NotFound);
         }
+        let mut media = Vec::with_capacity(rows.len());
+        for row in rows {
+            media.push(serde_json::from_str::<Media>(row.try_get("metadata")?)?);
+        }
+        media.sort_unstable_by_key(|item| item.id);
         let media_count = media.len();
         let mut contents = BTreeMap::<String, (u64, PathBuf)>::new();
         let mut guards = Vec::new();
+        let mut files = HashMap::new();
+        let mut hashes = HashSet::new();
         for item in &media {
             for file in media_files(item) {
-                if contents.contains_key(&file.sha256) {
+                if !hashes.insert(file.sha256.clone()) {
                     continue;
                 }
                 let size = parse_size(&file.file_size)?;
                 guards.push(OpenGuard::new(self.0.datalith.clone(), file.id).await);
-                let path = self.0.datalith.get_file_path(file.id).await?;
-                contents.insert(file.sha256.clone(), (size, path));
+                files.insert(file.id, (file.sha256.clone(), size));
+            }
+        }
+        let ids: Vec<_> = files.keys().copied().collect();
+        let file_directory = self.0.datalith.get_environment().join(PATH_FILE_DIRECTORY);
+        for ids in ids.chunks(QUERY_BATCH_SIZE) {
+            check_cancelled(&cancel)?;
+            let mut query = QueryBuilder::<Sqlite>::new(
+                "SELECT f.id, COALESCE(b.storage_id, f.id) FROM files f LEFT JOIN blob_files b ON \
+                 b.file_id = f.id WHERE f.id IN (",
+            );
+            let mut values = query.separated(",");
+            for id in ids {
+                values.push_bind(*id);
+            }
+            values.push_unseparated(")");
+            let paths: Vec<(Uuid, Uuid)> =
+                query.build_query_as().fetch_all(&self.0.datalith.0.db).await?;
+            if paths.len() != ids.len() {
+                return Err(ServiceError::NotFound);
+            }
+            for (id, storage_id) in paths {
+                let (hash, size) = files.remove(&id).ok_or(ServiceError::NotFound)?;
+                contents.insert(
+                    hash,
+                    (size, file_directory.join(format!("{:x}", storage_id.as_u128()))),
+                );
             }
         }
         drop(mutation);

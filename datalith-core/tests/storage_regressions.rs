@@ -11,6 +11,38 @@ use global::*;
 use tokio::{fs, io::AsyncWriteExt, task::JoinSet, time};
 
 #[tokio::test]
+async fn parallel_uploads_store_distinct_contents() {
+    let datalith = datalith_init().await;
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(16));
+    let mut uploads = JoinSet::new();
+    for value in 0..16u8 {
+        let datalith = datalith.clone();
+        let barrier = barrier.clone();
+        uploads.spawn(async move {
+            barrier.wait().await;
+            datalith
+                .put_file_by_buffer(
+                    vec![value; 65536],
+                    Some(format!("{value}.bin")),
+                    Some((mime::APPLICATION_OCTET_STREAM, datalith_core::FileTypeLevel::Manual)),
+                )
+                .await
+                .unwrap()
+        });
+    }
+    time::timeout(Duration::from_secs(5), async {
+        let mut ids = std::collections::HashSet::new();
+        while let Some(file) = uploads.join_next().await {
+            ids.insert(file.unwrap().id());
+        }
+        assert_eq!(16, ids.len());
+    })
+    .await
+    .unwrap();
+    datalith_close(datalith).await;
+}
+
+#[tokio::test]
 async fn read_waiting_for_delete_does_not_keep_the_file_open() {
     let datalith = datalith_init().await;
     let file = datalith.put_file_by_buffer(b"content", Some("file.txt"), None).await.unwrap();

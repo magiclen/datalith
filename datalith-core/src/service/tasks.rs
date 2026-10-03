@@ -572,10 +572,11 @@ impl DatalithService {
             if let Err(error) = service.expire_tasks().await {
                 tracing::warn!(%error, "task cleanup failed");
             }
-            // Scan the file directory after a file was released, and once in a while to retry files that were still open.
-            if service.0.released_files.swap(false, Ordering::AcqRel)
-                || last_scan.elapsed() >= FULL_SCAN_INTERVAL
-            {
+            if let Err(error) = service.clear_released_files().await {
+                tracing::warn!(%error, "released file cleanup failed");
+            }
+            // Keep a full scan for files left by interrupted work or older storage methods.
+            if last_scan.elapsed() >= FULL_SCAN_INTERVAL {
                 if let Err(error) = service.clear_untracked_files().await {
                     tracing::warn!(%error, "stored file cleanup failed");
                 }

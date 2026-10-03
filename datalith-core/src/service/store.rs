@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::atomic::Ordering,
 };
 
 use chrono::Utc;
@@ -169,8 +168,10 @@ impl DatalithService {
 
     async fn delete_media_inner(&self, id: Uuid) -> Result<bool, ServiceError> {
         let mut tx = self.0.datalith.0.db.begin_with("BEGIN IMMEDIATE").await?;
-        let rows: Vec<(Uuid, i64)> = sqlx::query_as(
-            "SELECT file_id, COUNT(*) FROM media_files WHERE media_id = ? GROUP BY file_id",
+        let rows: Vec<(Uuid, i64, Uuid)> = sqlx::query_as(
+            "SELECT m.file_id, COUNT(*), COALESCE(b.storage_id, m.file_id) FROM media_files m \
+             LEFT JOIN blob_files b ON b.file_id = m.file_id WHERE m.media_id = ? GROUP BY \
+             m.file_id, b.storage_id",
         )
         .bind(id)
         .fetch_all(&mut *tx)
@@ -181,15 +182,14 @@ impl DatalithService {
             .await?
             .rows_affected()
             > 0;
-        let mut released = false;
-        for (id, count) in rows {
-            released |=
-                Datalith::release_file_references_in_transaction(&mut tx, id, count as u64).await?;
+        let mut released = Vec::new();
+        for (id, count, storage_id) in rows {
+            if Datalith::release_file_references_in_transaction(&mut tx, id, count as u64).await? {
+                released.push(storage_id);
+            }
         }
         tx.commit().await?;
-        if released {
-            self.0.released_files.store(true, Ordering::Release);
-        }
+        self.0.released_files.lock().unwrap().extend(released);
         Ok(deleted)
     }
 
@@ -214,12 +214,35 @@ impl DatalithService {
     }
 
     pub(super) async fn clear_untracked_files(&self) -> Result<(), ServiceError> {
+        let Ok(_gate) = self.0.writes.try_read() else {
+            return Ok(());
+        };
         let _mutation = self.0.mutations.lock().await;
         self.0
             .datalith
             .clear_untracked_files()
             .await
             .map_err(|e| ServiceError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    pub(super) async fn clear_released_files(&self) -> Result<(), ServiceError> {
+        let ids: Vec<_> = self.0.released_files.lock().unwrap().iter().copied().collect();
+        for id in ids {
+            let Ok(_gate) = self.0.writes.try_read() else {
+                break;
+            };
+            let _mutation = self.0.mutations.lock().await;
+            if self
+                .0
+                .datalith
+                .clear_untracked_storage_file(id)
+                .await
+                .map_err(|error| ServiceError::Internal(error.to_string()))?
+            {
+                self.0.released_files.lock().unwrap().remove(&id);
+            }
+        }
         Ok(())
     }
 
@@ -323,9 +346,6 @@ impl DatalithService {
                 .await?;
             return Ok(());
         }
-        if taken.is_some() {
-            metadata.id = Uuid::new_v4();
-        }
         // Legacy files keep the hash in `files`, while aliased files keep it in `blob_files`; each lookup uses its own index.
         let existing: Option<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT id, storage_id FROM (SELECT b.file_id AS id, b.storage_id AS storage_id FROM \
@@ -349,33 +369,52 @@ impl DatalithService {
                 .await?;
             return Ok(());
         }
+        let directory = self.0.datalith.get_environment().join(PATH_FILE_DIRECTORY);
+        fs::create_dir_all(&directory).await?;
+        loop {
+            // A removed file ID can still name shared content or protect an active reader.
+            let reserved = sqlx::query(
+                "SELECT 1 FROM files WHERE id = ? UNION ALL SELECT 1 FROM blob_files WHERE \
+                 file_id = ? UNION ALL SELECT 1 FROM blob_files WHERE storage_id = ? LIMIT 1",
+            )
+            .bind(metadata.id)
+            .bind(metadata.id)
+            .bind(metadata.id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .is_some();
+            let destination = directory.join(format!("{:x}", metadata.id.as_u128()));
+            if !reserved && !fs::try_exists(&destination).await? {
+                break;
+            }
+            metadata.id = Uuid::new_v4();
+        }
         guards.push(
             OpenGuard::try_new(self.0.datalith.clone(), metadata.id).ok_or(ServiceError::Busy)?,
         );
-        let storage_id =
-            if let Some((_, storage_id)) = existing {
-                storage_id
-            } else {
-                let source = prepared
-                    .get(&source_id)
-                    .ok_or_else(|| ServiceError::Invalid("missing file content".into()))?;
-                let directory = self.0.datalith.get_environment().join(PATH_FILE_DIRECTORY);
-                fs::create_dir_all(&directory).await?;
-                let destination = directory.join(format!("{:x}", metadata.id.as_u128()));
-                // This runs inside the write transaction, so link the staged file instead of copying it; staged files are never changed after staging.
-                if fs::hard_link(&source.path, &destination).await.is_err() {
-                    let temporary =
-                        tempfile::NamedTempFile::new_in(source.path.parent().ok_or_else(
-                            || ServiceError::Invalid("invalid staging path".into()),
-                        )?)?;
-                    fs::copy(&source.path, temporary.path()).await?;
-                    fs::rename(temporary.path(), &destination).await?;
+        let storage_id = if let Some((_, storage_id)) = existing {
+            storage_id
+        } else {
+            let source = prepared
+                .get(&source_id)
+                .ok_or_else(|| ServiceError::Invalid("missing file content".into()))?;
+            let destination = directory.join(format!("{:x}", metadata.id.as_u128()));
+            // This runs inside the write transaction, so link the staged file instead of copying it; staged files are never changed after staging.
+            if let Err(error) = fs::hard_link(&source.path, &destination).await {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    return Err(error.into());
                 }
-                // Image outputs are not synced when they are written.
-                fs::File::open(&destination).await?.sync_all().await?;
-                sync_directory(&directory).await?;
-                metadata.id
-            };
+                // The fallback must stay on the destination file system and must never replace an existing file.
+                let temporary = tempfile::NamedTempFile::new_in(&directory)?;
+                fs::copy(&source.path, temporary.path()).await?;
+                fs::File::open(temporary.path()).await?.sync_all().await?;
+                temporary.persist_noclobber(&destination).map_err(|error| error.error)?;
+            }
+            // Image outputs are not synced when they are written.
+            fs::File::open(&destination).await?.sync_all().await?;
+            sync_directory(&directory).await?;
+            metadata.id
+        };
         let stored_hash = if storage_id == metadata.id {
             hash.clone()
         } else {
@@ -437,4 +476,47 @@ pub(super) async fn sync_directory(path: &Path) -> Result<(), ServiceError> {
     #[cfg(not(unix))]
     let _ = path;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ServiceConfig, TaskStatus, UploadOptions};
+
+    #[tokio::test]
+    async fn released_content_is_collected_after_its_reader_closes() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = DatalithService::new(
+            Datalith::new(directory.path()).await.unwrap(),
+            ServiceConfig::default(),
+        )
+        .await
+        .unwrap();
+        let task = service
+            .submit_upload(b"content".as_slice(), UploadOptions::default(), None)
+            .await
+            .unwrap();
+        let media: Media = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let task = service.get_task(task.id).await.unwrap().unwrap();
+                if task.status.is_terminal() {
+                    assert_eq!(TaskStatus::Succeeded, task.status);
+                    break serde_json::from_value(task.result.unwrap()).unwrap();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let content =
+            service.open_content(media.id, ContentRequest::default(), false).await.unwrap();
+        let path = service.0.datalith.get_file_path(content.metadata.id).await.unwrap();
+        service.delete_media(media.id).await.unwrap();
+        service.clear_released_files().await.unwrap();
+        assert!(fs::try_exists(&path).await.unwrap());
+        drop(content);
+        service.clear_released_files().await.unwrap();
+        assert!(!fs::try_exists(path).await.unwrap());
+        service.close().await.unwrap();
+    }
 }

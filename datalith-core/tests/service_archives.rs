@@ -257,3 +257,52 @@ async fn import_remaps_a_conflicting_file_id_consistently() {
     source.close().await.unwrap();
     target.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn import_preserves_content_whose_storage_id_was_released() {
+    let (_source_directory, source) = service().await;
+    let (_target_directory, target) = service().await;
+    let original = uploaded(&target, "original.txt", b"original content").await;
+    let reserved = original.original.unwrap().id;
+    let alias = uploaded(&source, "alias.txt", b"original content").await;
+    imported(&target, &exported(&source).await).await;
+    target.delete_media(original.id).await.unwrap();
+
+    let replacement = uploaded(&source, "replacement.txt", b"replacement content").await;
+    let task = source
+        .submit_export(
+            ExportOptions {
+                ids: Some(vec![replacement.id])
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let task = completed(&source, task.id).await;
+    assert_eq!(TaskStatus::Succeeded, task.status);
+    let mut content = source.open_artifact(task.id).await.unwrap();
+    let mut bytes = Vec::new();
+    content.file.read_to_end(&mut bytes).await.unwrap();
+    let mut packed = entries(&bytes);
+    let mut manifest: Value = serde_json::from_slice(&packed[0].1).unwrap();
+    assert_eq!(1, manifest["media"].as_array().unwrap().len());
+    manifest["media"][0]["original"]["id"] = serde_json::to_value(reserved).unwrap();
+    packed[0].1 = serde_json::to_vec(&manifest).unwrap();
+    let result = imported(&target, &pack(packed)).await;
+    assert_ne!(reserved.to_string(), result["file_id_map"][reserved.to_string()]);
+
+    for (id, expected) in [
+        (alias.id, b"original content".as_slice()),
+        (replacement.id, b"replacement content".as_slice()),
+    ] {
+        let mut content = target.open_content(id, ContentRequest::default(), false).await.unwrap();
+        let mut actual = Vec::new();
+        content.file.read_to_end(&mut actual).await.unwrap();
+        assert_eq!(expected, actual);
+        use sha2::{Digest, Sha256};
+        assert_eq!(hex::encode(Sha256::digest(expected)), content.metadata.sha256);
+    }
+    assert!(!exported(&target).await.is_empty());
+    source.close().await.unwrap();
+    target.close().await.unwrap();
+}

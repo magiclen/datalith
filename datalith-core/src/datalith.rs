@@ -635,7 +635,8 @@ impl Datalith {
         debug_assert!(result.rows_affected() > 0);
 
         let original_file_path = temporary_file_path;
-        let file_path = self.get_file_path(id).await?;
+        // A new file has no alias, so do not request another connection while holding the write transaction.
+        let file_path = self.get_file_directory().await?.join(format!("{:x}", id.as_u128()));
 
         // Protect this ID before saving it in the database.
         let open_guard = OpenGuard::new(self.clone(), id).await;
@@ -883,6 +884,47 @@ impl Datalith {
             .await?;
         }
         Ok(counter)
+    }
+
+    pub(crate) async fn clear_untracked_storage_file(
+        &self,
+        storage_id: Uuid,
+    ) -> Result<bool, DatalithReadError> {
+        let mut ids: HashSet<Uuid> =
+            sqlx::query_scalar("SELECT file_id FROM blob_files WHERE storage_id = ?")
+                .bind(storage_id)
+                .fetch_all(&self.0.db)
+                .await?
+                .into_iter()
+                .collect();
+        ids.insert(storage_id);
+        let Some(_guards) = DeleteGuard::try_acquire_multiple(self.clone(), &ids) else {
+            return Ok(false);
+        };
+        let mut tx = self.0.db.begin_with("BEGIN IMMEDIATE").await?;
+        let tracked = sqlx::query(
+            "SELECT 1 FROM files f LEFT JOIN blob_files b ON b.file_id = f.id WHERE f.id = ? AND \
+             (b.storage_id IS NULL OR b.storage_id = f.id) UNION ALL SELECT 1 FROM blob_files b \
+             JOIN files f ON f.id = b.file_id WHERE b.storage_id = ? LIMIT 1",
+        )
+        .bind(storage_id)
+        .bind(storage_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_some();
+        if !tracked {
+            let path = self.get_file_directory().await?.join(format!("{:x}", storage_id.as_u128()));
+            allow_not_found_error(fs::remove_file(path).await)?;
+        }
+        sqlx::query(
+            "DELETE FROM blob_files WHERE storage_id = ? AND NOT EXISTS (SELECT 1 FROM files \
+             WHERE id = file_id)",
+        )
+        .bind(storage_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 }
 
