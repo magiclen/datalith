@@ -42,6 +42,8 @@ impl Drop for PendingDirectory {
 }
 
 impl DatalithService {
+    /// Queue an upload; the returned task creates the media.
+    /// A repeated request with the same idempotency key and content returns the first task.
     pub async fn submit_upload(
         &self,
         reader: impl AsyncRead + Unpin,
@@ -62,6 +64,7 @@ impl DatalithService {
         .await
     }
 
+    /// Queue the import of a Datalith archive.
     pub async fn submit_import(
         &self,
         reader: impl AsyncRead + Unpin,
@@ -79,6 +82,8 @@ impl DatalithService {
         .await
     }
 
+    /// Queue an export of media into a Datalith archive.
+    /// All media are exported when `options.ids` is `None`.
     pub async fn submit_export(
         &self,
         options: ExportOptions,
@@ -94,6 +99,7 @@ impl DatalithService {
         self.enqueue(id, Work::Export(options), idempotency_key, directory).await
     }
 
+    /// Queue the creation of new image variants from existing media.
     pub async fn submit_process(
         &self,
         id: Uuid,
@@ -310,6 +316,7 @@ impl DatalithService {
         .map_err(|error| ServiceError::Internal(error.to_string()))?
     }
 
+    /// Get a task by ID.
     pub async fn get_task(&self, id: Uuid) -> Result<Option<Task>, ServiceError> {
         let metadata: Option<String> = sqlx::query_scalar("SELECT metadata FROM tasks WHERE id=?")
             .bind(id)
@@ -318,6 +325,7 @@ impl DatalithService {
         metadata.map(|value| serde_json::from_str(&value).map_err(ServiceError::from)).transpose()
     }
 
+    /// Cancel a task; a running task stops at its next safe point.
     pub async fn cancel_task(&self, id: Uuid) -> Result<Task, ServiceError> {
         let _mutation = self.0.mutations.lock().await;
         let mut task = self.get_task(id).await?.ok_or(ServiceError::NotFound)?;
@@ -339,6 +347,7 @@ impl DatalithService {
         Ok(task)
     }
 
+    /// Queue a failed or cancelled task again.
     pub async fn retry_task(&self, id: Uuid) -> Result<Task, ServiceError> {
         let _gate = self.0.writes.try_read().map_err(|_| ServiceError::Busy)?;
         let _mutation = self.0.mutations.lock().await;

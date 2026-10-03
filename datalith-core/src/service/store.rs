@@ -22,6 +22,7 @@ impl DatalithService {
         self.0.datalith.get_environment().join("datalith.tasks").join(id.to_string())
     }
 
+    /// Get a media item that has not expired or been consumed.
     pub async fn get_media(&self, id: Uuid) -> Result<Option<Media>, ServiceError> {
         let row = sqlx::query(
             "SELECT metadata, consumed_at FROM media WHERE id = ? AND (expires_at IS NULL OR \
@@ -40,6 +41,8 @@ impl DatalithService {
         .transpose()
     }
 
+    /// List media items, newest first.
+    /// `page` starts from 1, and `per_page` must be from 1 to 100.
     pub async fn list_media(&self, page: u64, per_page: u64) -> Result<Page<Media>, ServiceError> {
         if page == 0 || !(1..=100).contains(&per_page) {
             return Err(ServiceError::Invalid(
@@ -81,6 +84,8 @@ impl DatalithService {
         })
     }
 
+    /// Open a file of a media item.
+    /// A single-use item is consumed unless `head` is `true`.
     pub async fn open_content(
         &self,
         id: Uuid,
@@ -152,6 +157,8 @@ impl DatalithService {
         })
     }
 
+    /// Remove a media item; its files are removed later when nothing else uses them.
+    /// Return `false` when the media does not exist.
     pub async fn delete_media(&self, id: Uuid) -> Result<bool, ServiceError> {
         let _gate = self.0.writes.try_read().map_err(|_| ServiceError::Busy)?;
         let _mutation = self.0.mutations.lock().await;
@@ -399,6 +406,7 @@ impl DatalithService {
         Ok(())
     }
 
+    /// Open the archive created by a finished export task.
     pub async fn open_artifact(&self, id: Uuid) -> Result<Content, ServiceError> {
         let guard = self.0.artifacts.clone().read_owned().await;
         let task = self.get_task(id).await?.ok_or(ServiceError::NotFound)?;

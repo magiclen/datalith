@@ -25,14 +25,22 @@ use uuid::Uuid;
 
 use crate::{Datalith, guard::OpenGuard};
 
+/// A media service with durable background tasks, built on a `Datalith` store.
 #[derive(Clone)]
 pub struct DatalithService(pub(super) Arc<ServiceInner>);
 
+/// An opened file that is ready to be read.
+/// Keep it until the read is done, because it stops the file from being removed.
 pub struct Content {
+    /// The opened file.
     pub file:                   File,
+    /// The stored file metadata.
     pub metadata:               MediaFile,
+    /// The time when the content was created.
     pub created_at:             DateTime<Utc>,
+    /// Whether the content can be downloaded only once.
     pub single_use:             bool,
+    /// Whether the content expires, so it must not be cached.
     pub temporary:              bool,
     pub(super) _file_guard:     Option<OpenGuard>,
     pub(super) _artifact_guard: Option<OwnedRwLockReadGuard<()>>,
@@ -54,6 +62,8 @@ pub(super) struct ServiceInner {
 }
 
 impl DatalithService {
+    /// Start the service, recover unfinished tasks, and run the background workers.
+    /// Only one service can use a store at a time.
     pub async fn new(datalith: Datalith, config: ServiceConfig) -> Result<Self, ServiceError> {
         if config.workers == 0
             || config.workers > 64
@@ -102,6 +112,7 @@ impl DatalithService {
         Ok(service)
     }
 
+    /// Describe the features and limits of this service as JSON.
     pub fn capabilities(&self) -> serde_json::Value {
         serde_json::json!({
             "api_version": "1", "version": env!("CARGO_PKG_VERSION"),
@@ -115,6 +126,7 @@ impl DatalithService {
         })
     }
 
+    /// Stop the background workers and close the store.
     pub async fn close(&self) -> Result<(), ServiceError> {
         self.0.shutdown.store(true, Ordering::Release);
         self.0.wakeup.notify_waiters();
