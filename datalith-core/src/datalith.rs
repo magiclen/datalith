@@ -10,7 +10,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -54,7 +54,6 @@ pub const PATH_FILE_DIRECTORY: &str = "datalith.files";
 const DATABASE_VERSION: u32 = 2;
 const MAX_DATABASE_CONNECTIONS: u32 = 4;
 
-const FILE_READ_BUFFER_SIZE: usize = 64 * 1024;
 const TEMPORARY_FILE_LIFESPAN: Duration = Duration::from_secs(60);
 
 #[cfg(feature = "image-convert")]
@@ -95,7 +94,6 @@ pub(crate) struct DatalithInner {
     pub(crate) _file_lifecycle:                  Mutex<FileLifecycle>,
     pub(crate) _file_changed:                    Notify,
     _sql_file:                                   std::fs::File,
-    pub(crate) _file_read_buffer_size:           AtomicUsize,
     pub(crate) _temporary_file_lifespan:         AtomicU64,
     #[cfg(feature = "image-convert")]
     pub(crate) _max_image_resolution:            AtomicU32,
@@ -119,22 +117,6 @@ impl Datalith {
     #[inline]
     pub fn get_environment(&self) -> &Path {
         self.0.environment.as_path()
-    }
-
-    /// Get the size of the file read buffer.
-    #[inline]
-    pub fn get_file_read_buffer_size(&self) -> usize {
-        self.0._file_read_buffer_size.load(Ordering::Relaxed)
-    }
-
-    /// Set the size (in bytes) of the file read buffer.
-    ///
-    /// The allowed size is **512 KiB** to **64 MiB**.
-    #[inline]
-    pub fn set_file_read_buffer_size(&self, mut size: usize) {
-        size = size.clamp(512 * 1024, 64 * 1024 * 1024);
-
-        self.0._file_read_buffer_size.swap(size, Ordering::Relaxed);
     }
 
     /// Get the lifetime of temporary uploads.
@@ -288,9 +270,6 @@ impl Datalith {
             _file_lifecycle:                                                    file_lifecycle,
             _file_changed:                                                      Notify::new(),
             _sql_file:                                                          sql_file,
-            _file_read_buffer_size:                                             AtomicUsize::new(
-                FILE_READ_BUFFER_SIZE,
-            ),
             _temporary_file_lifespan:                                           AtomicU64::new(
                 TEMPORARY_FILE_LIFESPAN.as_millis() as u64,
             ),
