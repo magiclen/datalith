@@ -323,27 +323,30 @@ impl DatalithService {
         guards.push(
             OpenGuard::try_new(self.0.datalith.clone(), metadata.id).ok_or(ServiceError::Busy)?,
         );
-        let storage_id = if let Some((_, storage_id)) = existing {
-            storage_id
-        } else {
-            let source = prepared
-                .get(&source_id)
-                .ok_or_else(|| ServiceError::Invalid("missing file content".into()))?;
-            let directory = self.0.datalith.get_environment().join(PATH_FILE_DIRECTORY);
-            fs::create_dir_all(&directory).await?;
-            let destination = directory.join(format!("{:x}", metadata.id.as_u128()));
-            let temporary = tempfile::NamedTempFile::new_in(
-                source
-                    .path
-                    .parent()
-                    .ok_or_else(|| ServiceError::Invalid("invalid staging path".into()))?,
-            )?;
-            fs::copy(&source.path, temporary.path()).await?;
-            fs::File::open(temporary.path()).await?.sync_all().await?;
-            fs::rename(temporary.path(), &destination).await?;
-            sync_directory(&directory).await?;
-            metadata.id
-        };
+        let storage_id =
+            if let Some((_, storage_id)) = existing {
+                storage_id
+            } else {
+                let source = prepared
+                    .get(&source_id)
+                    .ok_or_else(|| ServiceError::Invalid("missing file content".into()))?;
+                let directory = self.0.datalith.get_environment().join(PATH_FILE_DIRECTORY);
+                fs::create_dir_all(&directory).await?;
+                let destination = directory.join(format!("{:x}", metadata.id.as_u128()));
+                // This runs inside the write transaction, so link the staged file instead of copying it; staged files are never changed after staging.
+                if fs::hard_link(&source.path, &destination).await.is_err() {
+                    let temporary =
+                        tempfile::NamedTempFile::new_in(source.path.parent().ok_or_else(
+                            || ServiceError::Invalid("invalid staging path".into()),
+                        )?)?;
+                    fs::copy(&source.path, temporary.path()).await?;
+                    fs::rename(temporary.path(), &destination).await?;
+                }
+                // Image outputs are not synced when they are written.
+                fs::File::open(&destination).await?.sync_all().await?;
+                sync_directory(&directory).await?;
+                metadata.id
+            };
         let stored_hash = if storage_id == metadata.id {
             hash.clone()
         } else {
