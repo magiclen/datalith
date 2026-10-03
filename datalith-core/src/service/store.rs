@@ -87,7 +87,6 @@ impl DatalithService {
         request: ContentRequest,
         head: bool,
     ) -> Result<Content, ServiceError> {
-        let _mutation = self.0.mutations.lock().await;
         let media = self.get_media(id).await?.ok_or(ServiceError::NotFound)?;
         let _write_gate = if media.single_use && !head {
             Some(self.0.writes.try_read().map_err(|_| ServiceError::Busy)?)
@@ -116,7 +115,18 @@ impl DatalithService {
         };
         let guard = OpenGuard::new(self.0.datalith.clone(), metadata.id).await;
         let path = self.0.datalith.get_file_path(metadata.id).await?;
-        let file = fs::File::open(path).await?;
+        let file = match fs::File::open(path).await {
+            Ok(file) => file,
+            // The media can be deleted and its file removed after it was read above.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(if self.get_media(id).await?.is_some() {
+                    ServiceError::Internal("the stored file is missing".into())
+                } else {
+                    ServiceError::NotFound
+                });
+            },
+            Err(error) => return Err(error.into()),
+        };
         if media.single_use && !head {
             let result = sqlx::query(
                 "UPDATE media SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL AND \
