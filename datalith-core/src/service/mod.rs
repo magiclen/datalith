@@ -39,15 +39,18 @@ pub struct Content {
 }
 
 pub(super) struct ServiceInner {
-    datalith:      Datalith,
-    config:        ServiceConfig,
-    wakeup:        Arc<Notify>,
-    shutdown:      AtomicBool,
-    cancellations: Mutex<HashMap<Uuid, Arc<AtomicBool>>>,
-    workers:       AsyncMutex<Vec<JoinHandle<()>>>,
-    writes:        RwLock<()>,
-    mutations:     AsyncMutex<()>,
-    artifacts:     Arc<RwLock<()>>,
+    datalith:       Datalith,
+    config:         ServiceConfig,
+    wakeup:         Arc<Notify>,
+    stopping:       Arc<Notify>,
+    shutdown:       AtomicBool,
+    // Set when a stored file loses its last reference, so that the maintenance task scans the file directory.
+    released_files: AtomicBool,
+    cancellations:  Mutex<HashMap<Uuid, Arc<AtomicBool>>>,
+    workers:        AsyncMutex<Vec<JoinHandle<()>>>,
+    writes:         RwLock<()>,
+    mutations:      AsyncMutex<()>,
+    artifacts:      Arc<RwLock<()>>,
 }
 
 impl DatalithService {
@@ -71,7 +74,9 @@ impl DatalithService {
             datalith,
             config,
             wakeup: Arc::new(Notify::new()),
+            stopping: Arc::new(Notify::new()),
             shutdown: AtomicBool::new(false),
+            released_files: AtomicBool::new(false),
             cancellations: Mutex::new(HashMap::new()),
             workers: AsyncMutex::new(Vec::new()),
             writes: RwLock::new(()),
@@ -80,13 +85,20 @@ impl DatalithService {
         }));
         service.recover_tasks().await?;
         service.collect_garbage().await?;
+        service.clear_untracked_files().await?;
         store::sync_directory(service.0.datalith.get_environment()).await?;
+        let mut workers = service.0.workers.lock().await;
         for _ in 0..service.0.config.workers {
             let worker = Arc::downgrade(&service.0);
-            service.0.workers.lock().await.push(tokio::spawn(async move {
+            workers.push(tokio::spawn(async move {
                 Self::worker(worker).await;
             }));
         }
+        let maintenance = Arc::downgrade(&service.0);
+        workers.push(tokio::spawn(async move {
+            Self::maintenance(maintenance).await;
+        }));
+        drop(workers);
         Ok(service)
     }
 
@@ -106,6 +118,7 @@ impl DatalithService {
     pub async fn close(&self) -> Result<(), ServiceError> {
         self.0.shutdown.store(true, Ordering::Release);
         self.0.wakeup.notify_waiters();
+        self.0.stopping.notify_waiters();
         let mut workers = self.0.workers.lock().await;
         let mut failure = None;
         while let Some(worker) = workers.last_mut() {

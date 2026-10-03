@@ -25,6 +25,9 @@ use super::{
 #[cfg(feature = "image-convert")]
 use super::{Variant, migration::content_path};
 
+const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30);
+const FULL_SCAN_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
 struct PendingDirectory {
     path:      PathBuf,
     committed: bool,
@@ -466,7 +469,6 @@ impl DatalithService {
     }
 
     pub(super) async fn worker(inner: std::sync::Weak<super::ServiceInner>) {
-        let mut maintenance = tokio::time::Instant::now();
         loop {
             let Some(inner) = inner.upgrade() else {
                 break;
@@ -474,15 +476,6 @@ impl DatalithService {
             let service = Self(inner);
             if service.0.shutdown.load(Ordering::Acquire) {
                 break;
-            }
-            if maintenance.elapsed() >= Duration::from_secs(30) {
-                if let Err(error) = service.collect_garbage().await {
-                    tracing::warn!(%error, "content cleanup failed");
-                }
-                if let Err(error) = service.expire_tasks().await {
-                    tracing::warn!(%error, "task cleanup failed");
-                }
-                maintenance = tokio::time::Instant::now();
             }
             let wakeup = service.0.wakeup.clone();
             let notified = wakeup.notified();
@@ -539,6 +532,46 @@ impl DatalithService {
             }
             drop(service);
             tokio::select! { _ = notified => (), _ = tokio::time::sleep(Duration::from_secs(1)) => () }
+        }
+    }
+
+    pub(super) async fn maintenance(inner: std::sync::Weak<super::ServiceInner>) {
+        let mut last_scan = tokio::time::Instant::now();
+        loop {
+            let Some(service) = inner.upgrade().map(Self) else {
+                break;
+            };
+            let stopping = service.0.stopping.clone();
+            let notified = stopping.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if service.0.shutdown.load(Ordering::Acquire) {
+                break;
+            }
+            // Do not keep the service alive while waiting.
+            drop(service);
+            tokio::select! { _ = notified => continue, _ = tokio::time::sleep(MAINTENANCE_INTERVAL) => () }
+            let Some(service) = inner.upgrade().map(Self) else {
+                break;
+            };
+            if service.0.shutdown.load(Ordering::Acquire) {
+                break;
+            }
+            if let Err(error) = service.collect_garbage().await {
+                tracing::warn!(%error, "content cleanup failed");
+            }
+            if let Err(error) = service.expire_tasks().await {
+                tracing::warn!(%error, "task cleanup failed");
+            }
+            // Scan the file directory after a file was released, and once in a while to retry files that were still open.
+            if service.0.released_files.swap(false, Ordering::AcqRel)
+                || last_scan.elapsed() >= FULL_SCAN_INTERVAL
+            {
+                if let Err(error) = service.clear_untracked_files().await {
+                    tracing::warn!(%error, "stored file cleanup failed");
+                }
+                last_scan = tokio::time::Instant::now();
+            }
         }
     }
 
@@ -618,11 +651,11 @@ impl DatalithService {
         let Ok(_artifacts) = self.0.artifacts.try_write() else {
             return Ok(());
         };
-        let _mutation = self.0.mutations.lock().await;
         let cutoff = Utc::now().timestamp_millis().saturating_sub(
             i64::try_from(self.0.config.task_retention_seconds.saturating_mul(1000))
                 .unwrap_or(i64::MAX),
         );
+        let mutation = self.0.mutations.lock().await;
         let ids: Vec<Uuid> = sqlx::query_scalar(
             "DELETE FROM tasks WHERE status IN ('succeeded','failed','cancelled') AND updated_at \
              < ? RETURNING id",
@@ -630,6 +663,8 @@ impl DatalithService {
         .bind(cutoff)
         .fetch_all(&self.0.datalith.0.db)
         .await?;
+        // The tasks are gone, so nothing else uses their directories.
+        drop(mutation);
         for id in ids {
             match fs::remove_dir_all(self.work_directory(id)).await {
                 Ok(()) => (),

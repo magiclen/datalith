@@ -820,6 +820,15 @@ impl Datalith {
     /// Clear untracked files in the file system.
     pub async fn clear_untracked_files(&self) -> Result<usize, DatalithReadError> {
         let file_directory = self.get_file_directory().await?;
+        // Load every storage ID in use with one query; only the other entries need the careful checks below, which run again before removing anything.
+        let used_storage_ids: HashSet<Uuid> = sqlx::query_scalar(
+            "SELECT COALESCE(b.storage_id, f.id) FROM files f LEFT JOIN blob_files b ON b.file_id \
+             = f.id",
+        )
+        .fetch_all(&self.0.db)
+        .await?
+        .into_iter()
+        .collect();
         let mut directory = fs::read_dir(file_directory).await?;
         let mut counter = 0;
         while let Some(entry) = directory.next_entry().await? {
@@ -836,6 +845,9 @@ impl Datalith {
                 .and_then(|name| u128::from_str_radix(name, 16).ok())
                 .map(Uuid::from_u128);
             if let Some(id) = id {
+                if used_storage_ids.contains(&id) {
+                    continue;
+                }
                 let _guard = DeleteGuard::new(self.clone(), id).await;
                 let aliases: Vec<Uuid> =
                     sqlx::query_scalar("SELECT file_id FROM blob_files WHERE storage_id = ?")

@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    sync::atomic::Ordering,
 };
 
 use chrono::Utc;
@@ -163,10 +164,15 @@ impl DatalithService {
             .await?
             .rows_affected()
             > 0;
+        let mut released = false;
         for (id, count) in rows {
-            Datalith::release_file_references_in_transaction(&mut tx, id, count as u64).await?;
+            released |=
+                Datalith::release_file_references_in_transaction(&mut tx, id, count as u64).await?;
         }
         tx.commit().await?;
+        if released {
+            self.0.released_files.store(true, Ordering::Release);
+        }
         Ok(deleted)
     }
 
@@ -174,7 +180,6 @@ impl DatalithService {
         let Ok(_gate) = self.0.writes.try_read() else {
             return Ok(());
         };
-        let _mutation = self.0.mutations.lock().await;
         // `UNION` lets each part use its own index; `OR` would scan the whole table.
         let ids: Vec<Uuid> = sqlx::query_scalar(
             "SELECT id FROM media WHERE expires_at <= ? UNION SELECT id FROM media WHERE \
@@ -184,8 +189,15 @@ impl DatalithService {
         .fetch_all(&self.0.datalith.0.db)
         .await?;
         for id in ids {
+            // Lock for each deletion so that other requests can run between them.
+            let _mutation = self.0.mutations.lock().await;
             self.delete_media_inner(id).await?;
         }
+        Ok(())
+    }
+
+    pub(super) async fn clear_untracked_files(&self) -> Result<(), ServiceError> {
+        let _mutation = self.0.mutations.lock().await;
         self.0
             .datalith
             .clear_untracked_files()
