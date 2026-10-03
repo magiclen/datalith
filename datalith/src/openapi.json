@@ -910,7 +910,7 @@
             }
           },
           "416": {
-            "description": "The requested range is outside the file or is not supported",
+            "description": "The requested range is outside the file",
             "headers": {
               "Content-Range": {
                 "schema": {
@@ -1158,7 +1158,7 @@
             }
           },
           "416": {
-            "description": "The requested range is outside the file or is not supported",
+            "description": "The requested range is outside the file",
             "headers": {
               "Content-Range": {
                 "schema": {
@@ -1435,7 +1435,7 @@
             }
           },
           "416": {
-            "description": "The requested range is outside the file or is not supported",
+            "description": "The requested range is outside the file",
             "headers": {
               "Content-Range": {
                 "schema": {
@@ -1645,7 +1645,7 @@
             }
           },
           "416": {
-            "description": "The requested range is outside the file or is not supported",
+            "description": "The requested range is outside the file",
             "headers": {
               "Content-Range": {
                 "schema": {

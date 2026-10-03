@@ -106,30 +106,54 @@ impl AsyncSeek for ContentReader {
     }
 }
 
-fn parse_range(value: &str, size: u64) -> Result<(u64, u64), ApiError> {
-    let range = value.strip_prefix("bytes=").ok_or_else(|| ApiError::range(size))?;
-    let (start, end) = range.split_once('-').ok_or_else(|| ApiError::range(size))?;
-    if size == 0 || range.contains(',') {
-        return Err(ApiError::range(size));
+// `None` means the header is ignored, which RFC 9110 allows for a range that is invalid or not supported.
+fn parse_range(value: &str, size: u64) -> Result<Option<(u64, u64)>, ApiError> {
+    let Some((unit, range)) = value.split_once('=') else {
+        return Ok(None);
+    };
+    // Multiple ranges are not supported.
+    if !unit.trim().eq_ignore_ascii_case("bytes") || range.contains(',') || size == 0 {
+        return Ok(None);
     }
+    let Some((start, end)) = range.trim().split_once('-') else {
+        return Ok(None);
+    };
     if start.is_empty() {
-        let suffix = end.parse::<u64>().map_err(|_| ApiError::range(size))?;
+        let Some(suffix) = parse_position(end) else {
+            return Ok(None);
+        };
         if suffix == 0 {
             return Err(ApiError::range(size));
         }
-        Ok((size.saturating_sub(suffix), size - 1))
+        Ok(Some((size.saturating_sub(suffix), size - 1)))
     } else {
-        let start = start.parse::<u64>().map_err(|_| ApiError::range(size))?;
-        let end = if end.is_empty() {
+        let Some(first) = parse_position(start) else {
+            return Ok(None);
+        };
+        let last = if end.is_empty() {
             size - 1
         } else {
-            end.parse::<u64>().map_err(|_| ApiError::range(size))?.min(size - 1)
+            let Some(last) = parse_position(end) else {
+                return Ok(None);
+            };
+            if last < first {
+                return Ok(None);
+            }
+            last.min(size - 1)
         };
-        if start >= size || end < start {
+        if first >= size {
             return Err(ApiError::range(size));
         }
-        Ok((start, end))
+        Ok(Some((first, last)))
     }
+}
+
+fn parse_position(value: &str) -> Option<u64> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    // Only digits are left, so parsing fails only when the number is too large.
+    Some(value.parse().unwrap_or(u64::MAX))
 }
 
 async fn response(
@@ -162,6 +186,9 @@ async fn response(
         "Last-Modified",
         content.created_at.format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
     );
+    // Stop browsers from guessing the type or running scripts in uploaded files such as HTML or SVG.
+    response.raw_header("X-Content-Type-Options", "nosniff");
+    response.raw_header("Content-Security-Policy", "sandbox");
     let mut start = 0;
     let mut length = size;
     if !content.single_use {
@@ -176,13 +203,16 @@ async fn response(
             return Ok(ContentResponse(response.finalize()));
         }
         if !head {
+            // RFC 9110 requires an exact match with `ETag` or `Last-Modified`.
             let apply_range = headers.if_range.as_deref().is_none_or(|value| {
                 value == etag
                     || DateTime::parse_from_rfc2822(value)
-                        .is_ok_and(|date| content.created_at.timestamp() <= date.timestamp())
+                        .is_ok_and(|date| content.created_at.timestamp() == date.timestamp())
             });
-            if apply_range && let Some(range) = headers.range {
-                let (first, last) = parse_range(&range, size)?;
+            if apply_range
+                && let Some(range) = headers.range
+                && let Some((first, last)) = parse_range(&range, size)?
+            {
                 start = first;
                 length = last - first + 1;
                 response
@@ -200,6 +230,8 @@ async fn response(
         length,
         position: 0,
     });
+    // Rocket reads 4 KiB at a time by default; this must come after `sized_body`, which replaces the body.
+    response.max_chunk_size(64 * 1024);
     Ok(ContentResponse(response.finalize()))
 }
 

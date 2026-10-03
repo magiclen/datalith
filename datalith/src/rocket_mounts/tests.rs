@@ -111,6 +111,12 @@ async fn upload_download_ranges_and_conditional_requests() {
     assert_eq!(Some("bytes */12"), response.headers().get_one("Content-Range"));
     drop(response);
 
+    for range in ["bytes=0-1,3-4", "items=1-2"] {
+        let response = client.get(&path).header(Header::new("Range", range)).dispatch().await;
+        assert_eq!(Status::Ok, response.status());
+        assert_eq!("Hello world!", response.into_string().await.unwrap());
+    }
+
     let response = client
         .get(&path)
         .header(Header::new("If-None-Match", format!("W/{etag}")))
