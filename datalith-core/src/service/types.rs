@@ -377,12 +377,14 @@ pub struct ProcessOptions {
 pub(super) enum Work {
     Upload {
         options: UploadOptions,
-        hash:    String,
+        #[serde(flatten)]
+        input:   StagedInput,
     },
     Process {
         source:     Uuid,
         options:    ProcessOptions,
-        hash:       String,
+        #[serde(flatten)]
+        input:      StagedInput,
         file_name:  String,
         expires_at: Option<DateTime<Utc>>,
     },
@@ -390,6 +392,14 @@ pub(super) enum Work {
         hash: String,
     },
     Export(ExportOptions),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct StagedInput {
+    pub hash:      String,
+    // Older tasks did not save the size of their input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_size: Option<u64>,
 }
 
 #[derive(Debug)]

@@ -151,3 +151,42 @@ async fn restart_recovers_work_without_duplicate_results() {
     drop(content);
     service.close().await.unwrap();
 }
+
+#[cfg(feature = "image-convert")]
+#[tokio::test]
+async fn process_retries_keep_the_original_task_after_source_deletion() {
+    use datalith_core::ProcessOptions;
+
+    let directory = TempDir::new().unwrap();
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    let task = service
+        .submit_upload(include_bytes!("data/image.png").as_slice(), UploadOptions::default(), None)
+        .await
+        .unwrap();
+    let source: Media =
+        serde_json::from_value(wait_task(&service, task.id).await.result.unwrap()).unwrap();
+    let task = service
+        .submit_process(source.id, ProcessOptions::default(), Some("process".into()))
+        .await
+        .unwrap();
+    wait_task(&service, task.id).await;
+    service.delete_media(source.id).await.unwrap();
+    let repeated = service
+        .submit_process(source.id, ProcessOptions::default(), Some("process".into()))
+        .await
+        .unwrap();
+    assert_eq!(task.id, repeated.id);
+    assert_eq!(TaskStatus::Succeeded, repeated.status);
+    let mut changed = ProcessOptions::default();
+    changed.image.save_original = false;
+    assert!(matches!(
+        service.submit_process(source.id, changed, Some("process".into())).await,
+        Err(ServiceError::Conflict(_))
+    ));
+    service.close().await.unwrap();
+}

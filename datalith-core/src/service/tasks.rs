@@ -19,8 +19,9 @@ use tokio::{
 use uuid::Uuid;
 
 use super::{
-    DatalithService, ExportOptions, Media, MediaKind, ProcessOptions, ServiceError, Task,
-    TaskError, TaskStatus, UploadOptions, Work, store::sync_directory,
+    DatalithService, ExportOptions, Media, MediaFile, MediaKind, PreparedFile, ProcessOptions,
+    ServiceError, StagedInput, Task, TaskError, TaskStatus, UploadOptions, Work,
+    store::sync_directory,
 };
 #[cfg(feature = "image-convert")]
 use super::{Variant, migration::content_path};
@@ -51,12 +52,12 @@ impl DatalithService {
         idempotency_key: Option<String>,
     ) -> Result<Task, ServiceError> {
         self.validate_upload(&options)?;
-        let (id, directory, hash) = self.stage_input(reader).await?;
+        let (id, directory, input) = self.stage_input(reader).await?;
         self.enqueue(
             id,
             Work::Upload {
                 options,
-                hash,
+                input,
             },
             idempotency_key,
             directory,
@@ -70,11 +71,11 @@ impl DatalithService {
         reader: impl AsyncRead + Unpin,
         idempotency_key: Option<String>,
     ) -> Result<Task, ServiceError> {
-        let (id, directory, hash) = self.stage_input(reader).await?;
+        let (id, directory, input) = self.stage_input(reader).await?;
         self.enqueue(
             id,
             Work::Import {
-                hash,
+                hash: input.hash
             },
             idempotency_key,
             directory,
@@ -106,6 +107,13 @@ impl DatalithService {
         options: ProcessOptions,
         idempotency_key: Option<String>,
     ) -> Result<Task, ServiceError> {
+        validate_idempotency_key(idempotency_key.as_deref())?;
+        if let Some(key) = &idempotency_key
+            && let Some(task) =
+                self.find_idempotent_task(key, &process_fingerprint(id, &options)?).await?
+        {
+            return Ok(task);
+        }
         self.validate_upload(&UploadOptions {
             kind: MediaKind::Image,
             image: options.image.clone(),
@@ -127,13 +135,13 @@ impl DatalithService {
             .await?;
         let file_name = content.metadata.file_name.clone();
         let mut content = content;
-        let (task_id, directory, hash) = self.stage_input(&mut content.file).await?;
+        let (task_id, directory, input) = self.stage_input(&mut content.file).await?;
         self.enqueue(
             task_id,
             Work::Process {
                 source: id,
                 options,
-                hash,
+                input,
                 file_name,
                 expires_at: source.expires_at,
             },
@@ -191,7 +199,7 @@ impl DatalithService {
     async fn stage_input(
         &self,
         mut reader: impl AsyncRead + Unpin,
-    ) -> Result<(Uuid, PendingDirectory, String), ServiceError> {
+    ) -> Result<(Uuid, PendingDirectory, StagedInput), ServiceError> {
         let _gate = self.0.writes.try_read().map_err(|_| ServiceError::Busy)?;
         let id = Uuid::new_v4();
         let directory = self.pending_directory(id).await?;
@@ -221,7 +229,31 @@ impl DatalithService {
                 .ok_or_else(|| ServiceError::Internal("invalid work path".into()))?,
         )
         .await?;
-        Ok((id, directory, hex::encode(hash.finalize())))
+        Ok((id, directory, StagedInput {
+            hash:      hex::encode(hash.finalize()),
+            file_size: Some(bytes),
+        }))
+    }
+
+    async fn find_idempotent_task(
+        &self,
+        key: &str,
+        fingerprint: &str,
+    ) -> Result<Option<Task>, ServiceError> {
+        let row = sqlx::query("SELECT metadata, work FROM tasks WHERE idempotency_key = ?")
+            .bind(key)
+            .fetch_optional(&self.0.datalith.0.db)
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let work: Work = serde_json::from_str(row.try_get("work")?)?;
+        if request_fingerprint(&work)? != fingerprint {
+            return Err(ServiceError::Conflict(
+                "Idempotency-Key was already used with a different request".into(),
+            ));
+        }
+        Ok(Some(serde_json::from_str(row.try_get("metadata")?)?))
     }
 
     async fn enqueue(
@@ -231,15 +263,7 @@ impl DatalithService {
         key: Option<String>,
         directory: PendingDirectory,
     ) -> Result<Task, ServiceError> {
-        if key.as_ref().is_some_and(|key| {
-            key.is_empty()
-                || key.len() > 128
-                || key.bytes().any(|byte| !(0x20..=0x7E).contains(&byte))
-        }) {
-            return Err(ServiceError::Invalid(
-                "Idempotency-Key must contain 1 to 128 printable bytes".into(),
-            ));
-        }
+        validate_idempotency_key(key.as_deref())?;
         let service = self.clone();
         // Keep the input until SQLite saves the task, even if the HTTP request ends.
         tokio::spawn(async move {
@@ -247,22 +271,11 @@ impl DatalithService {
             let _gate = service.0.writes.try_read().map_err(|_| ServiceError::Busy)?;
             let _mutation = service.0.mutations.lock().await;
             let payload = serde_json::to_string(&work)?;
-            let fingerprint = hex::encode(Sha256::digest(payload.as_bytes()));
-            if let Some(key) = &key {
-                let existing = sqlx::query(
-                    "SELECT metadata, fingerprint FROM tasks WHERE idempotency_key = ?",
-                )
-                .bind(key)
-                .fetch_optional(&service.0.datalith.0.db)
-                .await?;
-                if let Some(row) = existing {
-                    if row.try_get::<String, _>("fingerprint")? != fingerprint {
-                        return Err(ServiceError::Conflict(
-                            "Idempotency-Key was already used with a different request".into(),
-                        ));
-                    }
-                    return Ok(serde_json::from_str(row.try_get("metadata")?)?);
-                }
+            let fingerprint = request_fingerprint(&work)?;
+            if let Some(key) = &key
+                && let Some(task) = service.find_idempotent_task(key, &fingerprint).await?
+            {
+                return Ok(task);
             }
             let now = Utc::now();
             let task = Task {
@@ -495,12 +508,14 @@ impl DatalithService {
                     let id = task.id;
                     let result = match work {
                         Work::Upload {
-                            options, ..
-                        } => service.run_upload(id, options, None, cancel.clone()).await,
+                            options,
+                            input,
+                        } => service.run_upload(id, options, None, input, cancel.clone()).await,
                         Work::Process {
                             options,
                             file_name,
                             expires_at,
+                            input,
                             ..
                         } => {
                             service
@@ -513,6 +528,7 @@ impl DatalithService {
                                         ..UploadOptions::default()
                                     },
                                     expires_at,
+                                    input,
                                     cancel.clone(),
                                 )
                                 .await
@@ -577,10 +593,11 @@ impl DatalithService {
             }
             // Keep a full scan for files left by interrupted work or older storage methods.
             if last_scan.elapsed() >= FULL_SCAN_INTERVAL {
-                if let Err(error) = service.clear_untracked_files().await {
-                    tracing::warn!(%error, "stored file cleanup failed");
+                match service.clear_untracked_files().await {
+                    Ok(true) => last_scan = tokio::time::Instant::now(),
+                    Ok(false) => (),
+                    Err(error) => tracing::warn!(%error, "stored file cleanup failed"),
                 }
-                last_scan = tokio::time::Instant::now();
             }
         }
     }
@@ -690,6 +707,7 @@ impl DatalithService {
         id: Uuid,
         options: UploadOptions,
         source_expiry: Option<chrono::DateTime<Utc>>,
+        staged: StagedInput,
         cancel: Arc<AtomicBool>,
     ) -> Result<serde_json::Value, ServiceError> {
         let input = self.work_directory(id).join("input");
@@ -783,7 +801,20 @@ impl DatalithService {
             mime = detected.to_string();
         }
         if options.kind == MediaKind::Resource || options.image.save_original {
-            let file = Self::prepare_file(input, mime, name).await?;
+            let size = match staged.file_size {
+                Some(size) => size,
+                None => fs::metadata(&input).await?.len(),
+            };
+            let file = PreparedFile {
+                path:     input,
+                metadata: MediaFile {
+                    id:        Uuid::new_v4(),
+                    sha256:    staged.hash,
+                    file_size: size.to_string(),
+                    file_type: mime,
+                    file_name: name,
+                },
+            };
             media.original = Some(file.metadata.clone());
             prepared.insert(file.metadata.id, file);
         }
@@ -814,6 +845,39 @@ impl DatalithService {
         drop(guards);
         Ok(result)
     }
+}
+
+fn validate_idempotency_key(key: Option<&str>) -> Result<(), ServiceError> {
+    if key.is_some_and(|key| {
+        key.is_empty() || key.len() > 128 || key.bytes().any(|byte| !(0x20..=0x7E).contains(&byte))
+    }) {
+        return Err(ServiceError::Invalid(
+            "Idempotency-Key must contain 1 to 128 printable bytes".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn process_fingerprint(source: Uuid, options: &ProcessOptions) -> Result<String, ServiceError> {
+    let request = serde_json::json!({"Process": {"source": source, "options": options}});
+    Ok(hex::encode(Sha256::digest(serde_json::to_vec(&request)?)))
+}
+
+fn request_fingerprint(work: &Work) -> Result<String, ServiceError> {
+    if let Work::Process {
+        source,
+        options,
+        ..
+    } = work
+    {
+        return process_fingerprint(*source, options);
+    }
+    let mut request = serde_json::to_value(work)?;
+    // The saved input size is a storage detail, so old and new requests use the same identity.
+    if let Some(serde_json::Value::Object(upload)) = request.get_mut("Upload") {
+        upload.remove("file_size");
+    }
+    Ok(hex::encode(Sha256::digest(serde_json::to_vec(&request)?)))
 }
 
 fn status_name(status: TaskStatus) -> &'static str {

@@ -51,6 +51,7 @@ It checks the size limit while reading.
 You can pass an idempotency key to avoid creating the same task twice.
 The same key with the same input returns the existing task.
 The same key with different content or options returns a conflict error.
+For `submit_process`, the same key, source ID, and options return the existing task even after the source is deleted or expires.
 
 ## Image settings
 

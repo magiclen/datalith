@@ -4,9 +4,12 @@ use std::{
 };
 
 use chrono::Utc;
+#[cfg(feature = "image-convert")]
 use sha2::{Digest, Sha256};
 use sqlx::{Row, Sqlite, Transaction};
-use tokio::{fs, io::AsyncReadExt};
+use tokio::fs;
+#[cfg(feature = "image-convert")]
+use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
 use super::{
@@ -213,9 +216,9 @@ impl DatalithService {
         Ok(())
     }
 
-    pub(super) async fn clear_untracked_files(&self) -> Result<(), ServiceError> {
+    pub(super) async fn clear_untracked_files(&self) -> Result<bool, ServiceError> {
         let Ok(_gate) = self.0.writes.try_read() else {
-            return Ok(());
+            return Ok(false);
         };
         let _mutation = self.0.mutations.lock().await;
         self.0
@@ -223,7 +226,7 @@ impl DatalithService {
             .clear_untracked_files()
             .await
             .map_err(|e| ServiceError::Internal(e.to_string()))?;
-        Ok(())
+        Ok(true)
     }
 
     pub(super) async fn clear_released_files(&self) -> Result<(), ServiceError> {
@@ -246,6 +249,7 @@ impl DatalithService {
         Ok(())
     }
 
+    #[cfg(feature = "image-convert")]
     pub(super) async fn prepare_file(
         path: PathBuf,
         file_type: String,

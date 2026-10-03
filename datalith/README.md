@@ -86,6 +86,7 @@ Finished task records, exported archives, and input kept for retry are removed a
 It must contain 1 to 128 printable ASCII bytes.
 Uploads, image processing, imports, and exports support this header.
 The same key and input return the existing task; a different input with the same key returns `409`.
+For a repeated processing request, this also works after the source is deleted or expires.
 This protection lasts only as long as the task record is kept.
 
 ## Image sizes and animations
