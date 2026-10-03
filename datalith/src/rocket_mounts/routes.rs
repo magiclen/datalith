@@ -81,8 +81,13 @@ pub(super) async fn upload(
     if options.file_name.is_none() {
         options.file_name.clone_from(&file.file_name);
     }
+    // Clients often send `application/octet-stream` for any file, so let the service detect the type instead.
     if options.file_type.is_none() {
-        options.file_type = file.content_type.as_ref().map(ToString::to_string);
+        options.file_type = file
+            .content_type
+            .as_ref()
+            .filter(|mime| mime.essence_str() != "application/octet-stream")
+            .map(ToString::to_string);
     }
     let reader = File::open(&file.path).await.map_err(ServiceError::from)?;
     let task = service.submit_upload(reader, options, key.0).await?;

@@ -731,13 +731,18 @@ impl DatalithService {
                 media.animated = image.animated;
                 media.frame_count = image.frame_count;
                 mime = image.original_mime;
+                // Each variant file gets its own extension, so drop the one from the original name.
+                let stem = std::path::Path::new(&name)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .map_or(name.as_str(), |extension| &name[..name.len() - extension.len() - 1]);
                 for variant in image.variants {
                     let file = Self::prepare_file(
                         variant.path,
                         variant.mime,
                         format!(
                             "{}-{}@{}x.{}",
-                            name, variant.spec.name, variant.multiplier, variant.format
+                            stem, variant.spec.name, variant.multiplier, variant.format
                         ),
                     )
                     .await?;
