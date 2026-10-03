@@ -22,7 +22,8 @@ async fn legacy_file(
     expires_at: Option<i64>,
     count: i64,
 ) {
-    let hash = if expires_at.is_some() { vec![0x55; 32] } else { Sha256::digest(bytes).to_vec() };
+    let hash =
+        if expires_at.is_some() { id.as_bytes().repeat(2) } else { Sha256::digest(bytes).to_vec() };
     sqlx::query(
         "INSERT INTO files(id,hash,created_at,file_size,file_type,file_name,count,expired_at) \
          VALUES(?,?,?,?,?,?,?,?)",
@@ -71,6 +72,7 @@ async fn migrate_legacy_ids_images_aliases_and_reference_counts() {
     let alias_id = Uuid::from_u128(2);
     let webp_id = Uuid::from_u128(3);
     let standalone_id = Uuid::from_u128(4);
+    let missing_id = Uuid::from_u128(5);
     let resource_id = Uuid::from_u128(11);
     let image_id = Uuid::from_u128(12);
     let temporary_resource_id = Uuid::from_u128(13);
@@ -79,6 +81,11 @@ async fn migrate_legacy_ids_images_aliases_and_reference_counts() {
     legacy_file(&pool, directory.path(), alias_id, PNG, "image/png", Some(expiry), 1).await;
     legacy_file(&pool, directory.path(), webp_id, WEBP, "image/webp", None, 1).await;
     legacy_file(&pool, directory.path(), standalone_id, STANDALONE, "text/plain", None, 5).await;
+    legacy_file(&pool, directory.path(), missing_id, STANDALONE, "text/plain", Some(expiry), 1)
+        .await;
+    let missing_path =
+        directory.path().join(PATH_FILE_DIRECTORY).join(format!("{:x}", missing_id.as_u128()));
+    fs::remove_file(missing_path).await.unwrap();
     for (id, expires_at) in [(resource_id, None), (temporary_resource_id, Some(expiry))] {
         sqlx::query(
             "INSERT INTO resources(id,created_at,file_type,file_name,file_id,expired_at) \

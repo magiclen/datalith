@@ -61,20 +61,33 @@ async fn upgrade_inner(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), Se
     )
     .fetch_all(pool)
     .await?;
+    let now = Utc::now().timestamp_millis();
     let mut files = HashMap::new();
     let mut storage = HashMap::<Vec<u8>, Uuid>::new();
     let mut mappings = Vec::new();
+    let mut dropped = Vec::new();
     for row in &rows {
         let id: Uuid = row.try_get("id")?;
         let expired: Option<i64> = row.try_get("expired_at")?;
-        let hash: Vec<u8> = if expired.is_some() {
-            get_hash_by_path(
+        let hash: Vec<u8> = match expired {
+            // Temporary files are disposable, so drop the expired ones and the ones whose content is gone.
+            Some(expired_at) if expired_at <= now => {
+                dropped.push(id);
+                continue;
+            },
+            Some(_) => match get_hash_by_path(
                 environment.join(PATH_FILE_DIRECTORY).join(format!("{:x}", id.as_u128())),
             )
-            .await?
-            .to_vec()
-        } else {
-            row.try_get("hash")?
+            .await
+            {
+                Ok(hash) => hash.to_vec(),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    dropped.push(id);
+                    continue;
+                },
+                Err(error) => return Err(error.into()),
+            },
+            None => row.try_get("hash")?,
         };
         let storage_id = *storage.entry(hash.clone()).or_insert(id);
         files.insert(id, MediaFile {
@@ -188,6 +201,9 @@ async fn upgrade_inner(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), Se
     // Keep standalone files available under their original IDs.
     for row in &rows {
         let id: Uuid = row.try_get("id")?;
+        let Some(file) = files.get(&id).cloned() else {
+            continue;
+        };
         let used: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM media_files WHERE file_id = ?")
             .bind(id)
             .fetch_one(&mut *tx)
@@ -196,7 +212,6 @@ async fn upgrade_inner(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), Se
             continue;
         }
         let expires_at: Option<i64> = row.try_get("expired_at")?;
-        let file = files[&id].clone();
         let media = Media {
             id,
             kind: MediaKind::Resource,
@@ -215,6 +230,9 @@ async fn upgrade_inner(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), Se
     sqlx::query("DELETE FROM image_thumbnails").execute(&mut *tx).await?;
     sqlx::query("DELETE FROM images").execute(&mut *tx).await?;
     sqlx::query("DELETE FROM resources").execute(&mut *tx).await?;
+    for id in dropped {
+        sqlx::query("DELETE FROM files WHERE id = ?").bind(id).execute(&mut *tx).await?;
+    }
     sqlx::query(
         "UPDATE files SET expired_at = NULL, count = (SELECT COUNT(*) FROM media_files WHERE \
          file_id = files.id)",
