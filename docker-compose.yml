@@ -9,11 +9,12 @@ services:
     environment:
       TZ: Asia/Taipei
       DATALITH_MAX_FILE_SIZE: 2 GiB
-      DATALITH_TEMPORARY_FILE_LIFESPAN: 60
+      DATALITH_WORKERS: 1
+      DATALITH_TASK_RETENTION_SECONDS: 604800
     volumes:
       - ~/docker/datalith:/app/shared
     ports:
-      - "1111:1111"
+      - "127.0.0.1:1111:1111"
     command: --environment /app/shared/db
     logging:
       driver: "syslog"

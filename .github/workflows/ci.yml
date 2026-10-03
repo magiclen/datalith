@@ -4,119 +4,59 @@ on: [push, pull_request]
 
 env:
   CARGO_TERM_COLOR: always
-  
+
 jobs:
   rustfmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
         with:
           toolchain: nightly
           components: rustfmt
-      - uses: actions-rust-lang/rustfmt@v1
-      
+      - run: cargo +nightly fmt --all -- --check
+
   clippy:
     runs-on: ubuntu-latest
     steps:
-      - name: Install ImageMagick
-        run: |
-          sudo apt update
-          sudo apt install libwebp-dev
-          wget https://imagemagick.org/archive/ImageMagick.tar.gz
-          tar xf ImageMagick.tar.gz
-          cd ImageMagick-*
-          ./configure --enable-hdri --with-webp
-          make -j$(nproc)
-          sudo make install
-      - run: sudo ldconfig
-        if: runner.os == 'Linux'
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v7.0.1
+      - run: bash .github/scripts/install-imagemagick.sh
+      - uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
         with:
           components: clippy
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
   tests:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          # - macos-latest
-        toolchain:
-          - stable
-          - nightly
-        features:
-          -
-          - --no-default-features
-    name: Test ${{ matrix.toolchain }} on ${{ matrix.os }} (${{ matrix.features }})
-    runs-on: ${{ matrix.os }}
+        toolchain: [stable, nightly]
+        features: ["", "--no-default-features"]
+    name: Test ${{ matrix.toolchain }} (${{ matrix.features }})
+    runs-on: ubuntu-latest
     steps:
-      - name: Install librsvg2 libwebp libmagic (Linux)
-        run: |
-          sudo apt update
-          sudo apt install librsvg2-dev libwebp-dev libmagic-dev
-        if: runner.os == 'Linux'
-      - name: Install libwebp (macOS)
-        run: |
-          brew update
-          brew list webp || brew install webp
-        if: runner.os == 'macOS'
-      - name: Install ImageMagick
-        run: |
-          wget https://imagemagick.org/archive/ImageMagick.tar.gz
-          tar xf ImageMagick.tar.gz
-          cd ImageMagick-*
-          ./configure --enable-hdri --with-rsvg
-          make -j$(nproc)
-          sudo make install
-      - run: sudo ldconfig
-        if: runner.os == 'Linux'
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v7.0.1
+      - run: bash .github/scripts/install-imagemagick.sh
+        if: matrix.features != '--no-default-features'
+      - uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
         with:
           toolchain: ${{ matrix.toolchain }}
-      - run: cargo test ${{ matrix.features }}
-      - run: cargo doc ${{ matrix.features }}
+      - run: cargo test --locked --workspace ${{ matrix.features }}
+      - run: cargo doc --locked --workspace ${{ matrix.features }}
 
   MSRV:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          # - macos-latest
-        toolchain:
-          - 1.83
-        features:
-          -
-          - --no-default-features
-    name: Test ${{ matrix.toolchain }} on ${{ matrix.os }} (${{ matrix.features }})
-    runs-on: ${{ matrix.os }}
+        toolchain: ["1.94.1"]
+        features: ["", "--no-default-features"]
+    name: Test MSRV ${{ matrix.toolchain }} (${{ matrix.features }})
+    runs-on: ubuntu-latest
     steps:
-      - name: Install librsvg2 libwebp libmagic (Linux)
-        run: |
-          sudo apt update
-          sudo apt install librsvg2-dev libwebp-dev libmagic-dev
-        if: runner.os == 'Linux'
-      - name: Install libwebp (macOS)
-        run: |
-          brew update
-          brew list webp || brew install webp
-        if: runner.os == 'macOS'
-      - name: Install ImageMagick
-        run: |
-          wget https://imagemagick.org/archive/ImageMagick.tar.gz
-          tar xf ImageMagick.tar.gz
-          cd ImageMagick-*
-          ./configure --enable-hdri --with-rsvg
-          make -j$(nproc)
-          sudo make install
-      - run: sudo ldconfig
-        if: runner.os == 'Linux'
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@v7.0.1
+      - run: bash .github/scripts/install-imagemagick.sh
+        if: matrix.features != '--no-default-features'
+      - uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
         with:
           toolchain: ${{ matrix.toolchain }}
-      - run: cargo test --lib --bins ${{ matrix.features }}
+      - run: cargo test --locked --workspace --lib --bins ${{ matrix.features }}
