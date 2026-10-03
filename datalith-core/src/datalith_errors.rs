@@ -91,6 +91,8 @@ impl Display for DatalithReadError {
 impl Error for DatalithReadError {}
 
 /// Errors when writing to Datalith.
+///
+/// For `FileLengthTooLarge`, `actual_file_length` is the number of bytes read before the upload stopped, so the whole input can be longer.
 #[derive(Debug)]
 pub enum DatalithWriteError {
     FileTypeInvalid { file_type: Box<Mime>, expected_file_type: Box<Mime> },

@@ -58,7 +58,7 @@ impl Display for DatalithImageWriteError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::DatalithWriteError(error) => Display::fmt(&error, f),
-            Self::UnsupportedImageType => f.write_str("supported image type"),
+            Self::UnsupportedImageType => f.write_str("unsupported image type"),
             Self::ResolutionTooBig => f.write_str("the image resolution is too big"),
             Self::MagickError(error) => Display::fmt(&error, f),
         }

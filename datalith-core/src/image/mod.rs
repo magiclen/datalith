@@ -125,17 +125,28 @@ impl Datalith {
         let (input, input_width, input_height, file_type, has_alpha_channel) =
             self.read_image_metadata(input).await?;
 
+        let file_name = file_name.map(|e| e.into());
+
         // Save the original file if requested.
         let (created_at, file_name, original_file) = if save_original_file {
             let original_file = self
                 .put_file_by_buffer(
                     input.as_u8_slice().unwrap(),
-                    file_name,
-                    Some((file_type, FileTypeLevel::Manual)),
+                    file_name.clone(),
+                    Some((file_type.clone(), FileTypeLevel::Manual)),
                 )
                 .await?;
 
-            (Local::now(), original_file.file_name().to_string(), Some(original_file))
+            // An existing file keeps the name from its first upload, so use the new name here.
+            let (created_at, file_name) = if original_file.is_new() {
+                (original_file.created_at(), original_file.file_name().to_string())
+            } else {
+                let created_at = Local::now();
+
+                (created_at, get_file_name(file_name, created_at, &file_type))
+            };
+
+            (created_at, file_name, Some(original_file))
         } else {
             let created_at = Local::now();
 
@@ -433,7 +444,12 @@ impl Datalith {
             None => (input_width, input_height),
         };
 
-        let file_stem = Path::new(file_name.as_str()).file_stem().unwrap().to_str().unwrap();
+        // A file name such as `.` or `..` has no stem.
+        let fallback_stem = created_at.timestamp_millis().to_string();
+        let file_stem = Path::new(file_name.as_str())
+            .file_stem()
+            .and_then(|file_stem| file_stem.to_str())
+            .unwrap_or(fallback_stem.as_str());
 
         for image_multiplier in 1..=max_image_multiplier as u16 {
             let width = if let Some(width) = image_width.checked_mul(image_multiplier) {

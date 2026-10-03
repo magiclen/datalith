@@ -28,7 +28,7 @@ use tokio::{
     fs,
     fs::File,
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    sync::Notify,
+    sync::{Notify, Semaphore},
     task::JoinSet,
     time,
 };
@@ -52,6 +52,7 @@ pub const PATH_TEMPORARY_FILE_DIRECTORY: &str = "datalith.temp";
 pub const PATH_FILE_DIRECTORY: &str = "datalith.files";
 
 const DATABASE_VERSION: u32 = 2;
+const MAX_DATABASE_CONNECTIONS: u32 = 4;
 
 const FILE_READ_BUFFER_SIZE: usize = 64 * 1024;
 const TEMPORARY_FILE_LIFESPAN: Duration = Duration::from_secs(60);
@@ -267,7 +268,7 @@ impl Datalith {
             .busy_timeout(Duration::from_secs(30));
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
-            .max_connections(4)
+            .max_connections(MAX_DATABASE_CONNECTIONS)
             .connect_with(sql_options)
             .await?;
         let (version, create_time) = Self::initial_with_migration(&pool, &environment_path).await?;
@@ -516,10 +517,16 @@ impl Datalith {
         let reader = File::open(file_path).await?;
         let temporary_file_path = self.get_temporary_file_path(Uuid::new_v4()).await?;
         let mut file_guard = TemporaryFileGuard::new(&temporary_file_path);
-        let (file_size, hash) =
+        let (file_size, hash) = if temporary {
+            let file_size =
+                get_file_size_by_reader_and_copy_to_file(reader, &temporary_file_path, None)
+                    .await?;
+
+            (file_size, get_random_hash())
+        } else {
             get_file_size_and_hash_by_reader_and_copy_to_file(reader, &temporary_file_path, None)
-                .await?;
-        let hash = if temporary { get_random_hash() } else { hash };
+                .await?
+        };
         let _put_guard = PutGuard::new(self.clone(), hash).await;
         if !temporary && let Some(file) = self.get_file_by_hash(&hash).await? {
             sqlx::query("UPDATE files SET count = count + 1 WHERE id = ?")
@@ -773,18 +780,26 @@ impl Datalith {
                 .bind(current_timestamp)
                 .fetch_all(&self.0.db)
                 .await?;
+        // Run at most as many deletions as the database pool has connections.
+        let permits = Arc::new(Semaphore::new(MAX_DATABASE_CONNECTIONS as usize));
         let mut tasks = JoinSet::new();
         for (id,) in resources {
+            let permit = permits.clone().acquire_owned().await.map_err(io::Error::other)?;
             let datalith = self.clone();
             tasks.spawn(async move {
+                let _permit = permit;
+
                 time::timeout(timeout, datalith.delete_resource_by_id(id))
                     .await
                     .unwrap_or_else(|_| Ok(false))
             });
         }
         for (id,) in rows {
+            let permit = permits.clone().acquire_owned().await.map_err(io::Error::other)?;
             let datalith = self.clone();
             tasks.spawn(async move {
+                let _permit = permit;
+
                 time::timeout(timeout, datalith.delete_file_by_id(id))
                     .await
                     .unwrap_or_else(|_| Ok(false))
@@ -1212,20 +1227,31 @@ pub(crate) async fn get_file_size_by_reader_and_copy_to_file(
     file_path: impl AsRef<Path>,
     expected_reader_length: Option<u64>,
 ) -> Result<u64, DatalithWriteError> {
-    get_file_size_and_hash_by_reader_and_copy_to_file(reader, file_path, expected_reader_length)
-        .await
-        .map(|(size, _)| size)
+    copy_reader_to_file(reader, file_path.as_ref(), expected_reader_length, None).await
 }
 
 async fn get_file_size_and_hash_by_reader_and_copy_to_file(
-    mut reader: impl AsyncRead + Unpin,
+    reader: impl AsyncRead + Unpin,
     file_path: impl AsRef<Path>,
     expected_reader_length: Option<u64>,
 ) -> Result<(u64, [u8; 32]), DatalithWriteError> {
-    let file_path = file_path.as_ref();
+    let mut hasher = Sha256::new();
+
+    let file_size =
+        copy_reader_to_file(reader, file_path.as_ref(), expected_reader_length, Some(&mut hasher))
+            .await?;
+
+    Ok((file_size, hasher.finalize().into()))
+}
+
+async fn copy_reader_to_file(
+    mut reader: impl AsyncRead + Unpin,
+    file_path: &Path,
+    expected_reader_length: Option<u64>,
+    mut hasher: Option<&mut Sha256>,
+) -> Result<u64, DatalithWriteError> {
     let mut cleanup = TemporaryFileGuard::new(file_path);
     let mut file = File::create(file_path).await?;
-    let mut hasher = Sha256::new();
     let mut file_size = 0u64;
     let mut retry_count = 0;
     let mut buffer =
@@ -1243,22 +1269,26 @@ async fn get_file_size_and_hash_by_reader_and_copy_to_file(
         };
         retry_count = 0;
         file_size += count as u64;
-        if expected_reader_length.is_none_or(|limit| file_size <= limit) {
-            file.write_all(&buffer[..count]).await?;
+
+        // Stop reading at once so that an endless reader cannot keep this upload busy.
+        if let Some(expected_file_length) = expected_reader_length
+            && file_size > expected_file_length
+        {
+            return Err(DatalithWriteError::FileLengthTooLarge {
+                expected_file_length,
+                actual_file_length: file_size,
+            });
+        }
+
+        file.write_all(&buffer[..count]).await?;
+
+        if let Some(hasher) = hasher.as_mut() {
             hasher.update(&buffer[..count]);
         }
     }
 
-    if let Some(expected_file_length) = expected_reader_length
-        && file_size > expected_file_length
-    {
-        return Err(DatalithWriteError::FileLengthTooLarge {
-            expected_file_length,
-            actual_file_length: file_size,
-        });
-    }
     file.flush().await?;
     file.sync_all().await?;
     cleanup.set_moved();
-    Ok((file_size, hasher.finalize().into()))
+    Ok(file_size)
 }

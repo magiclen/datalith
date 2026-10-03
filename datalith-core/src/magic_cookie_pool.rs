@@ -52,9 +52,13 @@ impl MagicCookiePool {
                 Err(_) => return None,
             };
 
+            // Fall back to the default database of libmagic, which also reads the `MAGIC` environment variable.
             let cookie = match cookie.load(&["/usr/share/file/magic.mgc"].try_into().unwrap()) {
                 Ok(cookie) => cookie,
-                Err(_) => return None,
+                Err(error) => match error.cookie().load(&Default::default()) {
+                    Ok(cookie) => cookie,
+                    Err(_) => return None,
+                },
             };
 
             cookies.push((AtomicBool::new(false), cookie));

@@ -56,7 +56,7 @@ impl DatalithManager {
                             Ok(count) => match count {
                                 0 => tracing::debug!("no untracked file needs to be deleted"),
                                 1 => tracing::info!("one untracked file has been deleted"),
-                                _ => tracing::info!("{count} untracked files haves been deleted"),
+                                _ => tracing::info!("{count} untracked files have been deleted"),
                             },
                             Err(error) => {
                                 tracing::warn!("{error}");
