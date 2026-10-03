@@ -145,6 +145,22 @@ fn check_dimensions(
     Ok(())
 }
 
+// ImageMagick picks a decoder from the file content, so reject other formats before it reads anything.
+fn check_signature(path: &Path) -> Result<(), ServiceError> {
+    let mut header = Vec::with_capacity(12);
+    File::open(path)?.take(12).read_to_end(&mut header)?;
+    let supported = header.starts_with(b"\x89PNG\r\n\x1a\n")
+        || header.starts_with(&[0xFF, 0xD8, 0xFF])
+        || header.starts_with(b"GIF87a")
+        || header.starts_with(b"GIF89a")
+        || (header.starts_with(b"RIFF") && header.get(8..12) == Some(b"WEBP"));
+    if supported {
+        Ok(())
+    } else {
+        Err(ServiceError::Unsupported("Only PNG, JPEG, GIF, and WebP images are supported.".into()))
+    }
+}
+
 // Read the APNG frame count before the decoder creates frames.
 fn apng_frame_count(path: &Path) -> Result<Option<u32>, ServiceError> {
     let mut file = File::open(path)?;
@@ -188,6 +204,7 @@ pub(crate) fn process_image(
 ) -> Result<ProcessedImage, ServiceError> {
     validate_options(options, limits)?;
     check_cancel(cancel)?;
+    check_signature(input)?;
     configure_resources()?;
     let input = ImageResource::Path(
         input

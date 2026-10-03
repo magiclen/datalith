@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 version=7.1.2-32
 checksum=940e349f0ef394e658fd57400b83d1d7a81b954f6e7bdbfbfad31b2718c10add
 build_dir=$(mktemp -d)
@@ -15,6 +17,8 @@ cd "$build_dir/ImageMagick-$version"
 ./configure --enable-hdri --with-quantum-depth=16 --with-webp --with-rsvg --disable-static --disable-docs --without-perl --without-x
 make -j"$(nproc)"
 sudo make install
+# Run the tests with the same security policy as the Docker image.
+sudo install -m 644 "$script_dir/../../imagemagick/policy.xml" /usr/local/etc/ImageMagick-7/policy.xml
 sudo ldconfig
 magick -version
 ffmpeg -version

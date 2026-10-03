@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Allow only the formats that Datalith accepts; the last matching policy wins, so deny everything first. -->
+<!-- APNG is decoded by FFmpeg through the VIDEO module, which hands the frames back as PAM images from the PNM module. -->
+<policymap>
+  <policy domain="path" rights="none" pattern="@*"/>
+  <policy domain="coder" rights="none" pattern="*"/>
+  <policy domain="coder" rights="read | write" pattern="{APNG,GIF,JPEG,JPG,PAM,PNG,PNG8,PNG24,PNG32,PNG48,PNG64,WEBP}"/>
+  <policy domain="module" rights="none" pattern="*"/>
+  <policy domain="module" rights="read | write" pattern="{GIF,JPEG,PNG,PNM,VIDEO,WEBP}"/>
+  <policy domain="delegate" rights="none" pattern="*"/>
+  <policy domain="delegate" rights="execute" pattern="{video:decode,ffmpeg}"/>
+  <policy domain="filter" rights="none" pattern="*"/>
+</policymap>
