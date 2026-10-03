@@ -48,7 +48,7 @@ ImageMagick must support PNG, JPEG, WebP, and GIF.
 Animated WebP needs libwebpmux, and APNG needs an ImageMagick coder and an FFmpeg delegate.
 A delegate is an external program that ImageMagick calls to read or write a format.
 Keep both the ImageMagick shared libraries and its configuration directory when you deploy the service.
-The Docker image and CI install `imagemagick/policy.xml`, an ImageMagick security policy that allows only these formats and the FFmpeg delegate; use it for other deployments too.
+The Docker image and CI install `imagemagick/policy.xml`, an ImageMagick security policy that blocks the formats that need Ghostscript (PostScript, EPS, PDF, PCL, and XPS); use it for other deployments too.
 APNG decoding and the image cache need a writable temporary directory.
 
 The default image limits are 50 million pixels per frame, 500 frames, 100 million decoded pixels in total, and 16 named image settings.

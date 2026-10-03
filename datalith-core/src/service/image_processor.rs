@@ -145,19 +145,21 @@ fn check_dimensions(
     Ok(())
 }
 
-// ImageMagick picks a decoder from the file content, so reject other formats before it reads anything.
-fn check_signature(path: &Path) -> Result<(), ServiceError> {
-    let mut header = Vec::with_capacity(12);
-    File::open(path)?.take(12).read_to_end(&mut header)?;
-    let supported = header.starts_with(b"\x89PNG\r\n\x1a\n")
-        || header.starts_with(&[0xFF, 0xD8, 0xFF])
-        || header.starts_with(b"GIF87a")
-        || header.starts_with(b"GIF89a")
-        || (header.starts_with(b"RIFF") && header.get(8..12) == Some(b"WEBP"));
-    if supported {
-        Ok(())
+// ImageMagick hands PostScript, EPS, PDF, and PCL to Ghostscript, which runs the file like a program, so reject them before ImageMagick reads anything.
+// The checks follow the format detection of ImageMagick; other formats are left to ImageMagick.
+fn reject_ghostscript_formats(path: &Path) -> Result<(), ServiceError> {
+    let mut header = Vec::with_capacity(5);
+    File::open(path)?.take(5).read_to_end(&mut header)?;
+    let postscript = header.starts_with(b"%!") || header.starts_with(b"\x04%!");
+    let eps_with_preview = header.starts_with(b"\xC5\xD0\xD3\xC6");
+    let pdf = header.get(..5).is_some_and(|magic| magic.eq_ignore_ascii_case(b"%PDF-"));
+    let pcl = header.starts_with(b"\x1BE\x1B") && !header.starts_with(b"\x1BE\x1B&");
+    if postscript || eps_with_preview || pdf || pcl {
+        Err(ServiceError::Unsupported(
+            "PostScript, PDF, and other formats that need Ghostscript are not supported.".into(),
+        ))
     } else {
-        Err(ServiceError::Unsupported("Only PNG, JPEG, GIF, and WebP images are supported.".into()))
+        Ok(())
     }
 }
 
@@ -204,7 +206,7 @@ pub(crate) fn process_image(
 ) -> Result<ProcessedImage, ServiceError> {
     validate_options(options, limits)?;
     check_cancel(cancel)?;
-    check_signature(input)?;
+    reject_ghostscript_formats(input)?;
     configure_resources()?;
     let input = ImageResource::Path(
         input

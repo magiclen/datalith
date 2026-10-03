@@ -1,13 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Allow only the formats that Datalith accepts; the last matching policy wins, so deny everything first. -->
-<!-- APNG is decoded by FFmpeg through the VIDEO module, which hands the frames back as PAM images from the PNM module. -->
+<!-- Datalith accepts every image format of ImageMagick except the ones that run Ghostscript, which has a long history of sandbox escapes. -->
+<!-- The URL and TEXT coders are blocked too, so that an SVG image cannot make ImageMagick fetch a URL or read a local file; uploads never use them directly. -->
 <policymap>
   <policy domain="path" rights="none" pattern="@*"/>
-  <policy domain="coder" rights="none" pattern="*"/>
-  <policy domain="coder" rights="read | write" pattern="{APNG,GIF,JPEG,JPG,PAM,PNG,PNG8,PNG24,PNG32,PNG48,PNG64,WEBP}"/>
-  <policy domain="module" rights="none" pattern="*"/>
-  <policy domain="module" rights="read | write" pattern="{GIF,JPEG,PNG,PNM,VIDEO,WEBP}"/>
-  <policy domain="delegate" rights="none" pattern="*"/>
-  <policy domain="delegate" rights="execute" pattern="{video:decode,ffmpeg}"/>
-  <policy domain="filter" rights="none" pattern="*"/>
+  <policy domain="coder" rights="none" pattern="{AI,EPDF,EPI,EPS,EPS2,EPS3,EPSF,EPSI,EPT,EPT2,EPT3,PCL,PDF,PDFA,POCKETMOD,PS,PS2,PS3,XPS}"/>
+  <policy domain="module" rights="none" pattern="{EPT,PCL,PDF,PS,PS2,PS3,XPS}"/>
+  <policy domain="delegate" rights="none" pattern="{gs,gxps,pcl6}"/>
+  <policy domain="coder" rights="none" pattern="{EPHEMERAL,FTP,HTTP,HTTPS,MSL,TEXT,URL}"/>
 </policymap>
