@@ -61,7 +61,7 @@ impl DatalithService {
         .await?;
         let rows: Vec<String> = sqlx::query_scalar(
             "SELECT metadata FROM media WHERE (expires_at IS NULL OR expires_at > ?) AND \
-             consumed_at IS NULL ORDER BY created_at DESC, id LIMIT ? OFFSET ?",
+             consumed_at IS NULL ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
         )
         .bind(now)
         .bind(per_page as i64)
@@ -175,8 +175,10 @@ impl DatalithService {
             return Ok(());
         };
         let _mutation = self.0.mutations.lock().await;
+        // `UNION` lets each part use its own index; `OR` would scan the whole table.
         let ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM media WHERE expires_at <= ? OR consumed_at IS NOT NULL",
+            "SELECT id FROM media WHERE expires_at <= ? UNION SELECT id FROM media WHERE \
+             consumed_at IS NOT NULL",
         )
         .bind(Utc::now().timestamp_millis())
         .fetch_all(&self.0.datalith.0.db)
@@ -295,10 +297,13 @@ impl DatalithService {
         if taken.is_some() {
             metadata.id = Uuid::new_v4();
         }
+        // Legacy files keep the hash in `files`, while aliased files keep it in `blob_files`; each lookup uses its own index.
         let existing: Option<(Uuid, Uuid)> = sqlx::query_as(
-            "SELECT f.id, COALESCE(b.storage_id, f.id) FROM files f LEFT JOIN blob_files b ON \
-             b.file_id=f.id WHERE (b.hash = ? OR f.hash = ?) AND f.expired_at IS NULL ORDER BY \
-             f.id LIMIT 1",
+            "SELECT id, storage_id FROM (SELECT b.file_id AS id, b.storage_id AS storage_id FROM \
+             blob_files b JOIN files f ON f.id = b.file_id WHERE b.hash = ? AND f.expired_at IS \
+             NULL UNION ALL SELECT f.id, COALESCE(b.storage_id, f.id) FROM files f LEFT JOIN \
+             blob_files b ON b.file_id = f.id WHERE f.hash = ? AND f.expired_at IS NULL) ORDER BY \
+             id LIMIT 1",
         )
         .bind(&hash)
         .bind(&hash)

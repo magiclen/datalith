@@ -31,6 +31,9 @@ async fn upgrade_inner(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), Se
             .fetch_optional(pool)
             .await?;
     if ready.as_deref() == Some("2") {
+        // Add new indexes to databases created by earlier versions.
+        sqlx::raw_sql(include_str!("../sql/service.sql")).execute(pool).await?;
+
         return Ok(());
     }
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM files").fetch_one(pool).await?;

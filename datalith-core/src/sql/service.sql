@@ -1,3 +1,5 @@
+-- This file runs on every start, so it must only contain idempotent statements.
+-- A change such as `ALTER TABLE` needs a new migration step instead.
 CREATE TABLE IF NOT EXISTS blob_files (
     file_id BLOB PRIMARY KEY NOT NULL,
     hash BLOB NOT NULL,
@@ -16,6 +18,7 @@ CREATE TABLE IF NOT EXISTS media (
 );
 CREATE INDEX IF NOT EXISTS media_created_at ON media(created_at, id);
 CREATE INDEX IF NOT EXISTS media_expiry ON media(expires_at);
+CREATE INDEX IF NOT EXISTS media_consumed ON media(consumed_at) WHERE consumed_at IS NOT NULL;
 CREATE TABLE IF NOT EXISTS media_files (
     media_id BLOB NOT NULL REFERENCES media(id) ON DELETE CASCADE,
     role TEXT NOT NULL,
