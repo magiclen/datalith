@@ -1,11 +1,18 @@
-#[cfg(feature = "image-convert")]
-use std::collections::HashSet;
-use std::{fs, path::PathBuf, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::PathBuf,
+};
 
-use tokio::time;
 use uuid::Uuid;
 
 use crate::Datalith;
+
+#[derive(Debug, Default)]
+pub(crate) struct FileLifecycle {
+    pub(crate) opening:  HashMap<Uuid, usize>,
+    pub(crate) deleting: HashSet<Uuid>,
+}
 
 #[derive(Debug)]
 pub(crate) struct PutGuard {
@@ -14,29 +21,23 @@ pub(crate) struct PutGuard {
 }
 
 impl Drop for PutGuard {
-    #[inline]
     fn drop(&mut self) {
-        let mut uploading_files = self._datalith.0._uploading_files.lock().unwrap();
-
-        uploading_files.remove(&self.hash);
+        self._datalith.0._uploading_files.lock().unwrap().remove(&self.hash);
+        self._datalith.0._file_changed.notify_waiters();
     }
 }
 
 impl PutGuard {
     pub async fn new(datalith: Datalith, hash: [u8; 32]) -> Self {
         loop {
-            {
-                let mut uploading_files = datalith.0._uploading_files.lock().unwrap();
-
-                if !uploading_files.contains(&hash) {
-                    uploading_files.insert(hash);
-                    break;
-                }
+            let changed = datalith.0._file_changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if datalith.0._uploading_files.lock().unwrap().insert(hash) {
+                break;
             }
-
-            time::sleep(Duration::from_millis(10)).await;
+            changed.await;
         }
-
         Self {
             _datalith: datalith,
             hash,
@@ -51,46 +52,48 @@ pub(crate) struct OpenGuard {
 }
 
 impl Drop for OpenGuard {
-    #[inline]
     fn drop(&mut self) {
-        // recover the count
-
-        let mut opening_files = self._datalith.0._opening_files.lock().unwrap();
-
-        let need_remove = {
-            let id = opening_files.get_mut(&self.id).unwrap();
-
-            match *id {
-                0 | 1 => true,
-                _ => {
-                    *id -= 1;
-
-                    false
-                },
-            }
-        };
-
-        if need_remove {
-            opening_files.remove(&self.id);
+        let mut lifecycle = self._datalith.0._file_lifecycle.lock().unwrap();
+        let count = lifecycle.opening.get_mut(&self.id).unwrap();
+        *count -= 1;
+        if *count == 0 {
+            lifecycle.opening.remove(&self.id);
         }
+        drop(lifecycle);
+        self._datalith.0._file_changed.notify_waiters();
     }
 }
 
 impl OpenGuard {
+    pub fn try_new(datalith: Datalith, id: Uuid) -> Option<Self> {
+        {
+            let mut lifecycle = datalith.0._file_lifecycle.lock().unwrap();
+            if lifecycle.deleting.contains(&id) {
+                return None;
+            }
+            *lifecycle.opening.entry(id).or_default() += 1;
+        }
+        Some(Self {
+            _datalith: datalith,
+            id,
+        })
+    }
+
     pub async fn new(datalith: Datalith, id: impl Into<Uuid>) -> Self {
         let id = id.into();
-
-        // increase the count
-        {
-            let mut opening_files = datalith.0._opening_files.lock().unwrap();
-
-            if let Some(opening_count) = opening_files.get_mut(&id) {
-                *opening_count += 1;
-            } else {
-                opening_files.insert(id, 1);
+        loop {
+            let changed = datalith.0._file_changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            {
+                let mut lifecycle = datalith.0._file_lifecycle.lock().unwrap();
+                if !lifecycle.deleting.contains(&id) {
+                    *lifecycle.opening.entry(id).or_default() += 1;
+                    break;
+                }
             }
+            changed.await;
         }
-
         Self {
             _datalith: datalith,
             id,
@@ -105,31 +108,24 @@ pub(crate) struct DeleteGuard {
 }
 
 impl Drop for DeleteGuard {
-    #[inline]
     fn drop(&mut self) {
-        let mut _deleting_files = self._datalith.0._deleting_files.lock().unwrap();
-
-        _deleting_files.remove(&self.id);
+        self._datalith.0._file_lifecycle.lock().unwrap().deleting.remove(&self.id);
+        self._datalith.0._file_changed.notify_waiters();
     }
 }
 
 impl DeleteGuard {
     pub async fn new(datalith: Datalith, id: impl Into<Uuid>) -> Self {
         let id = id.into();
-
         loop {
-            {
-                let mut deleting_files = datalith.0._deleting_files.lock().unwrap();
-
-                if !deleting_files.contains(&id) {
-                    deleting_files.insert(id);
-                    break;
-                }
+            let changed = datalith.0._file_changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if datalith.0._file_lifecycle.lock().unwrap().deleting.insert(id) {
+                break;
             }
-
-            time::sleep(Duration::from_millis(10)).await;
+            changed.await;
         }
-
         Self {
             _datalith: datalith,
             id,
@@ -137,10 +133,15 @@ impl DeleteGuard {
     }
 
     #[cfg(feature = "image-convert")]
-    #[inline]
     pub async fn acquire_multiple(guards: &mut Vec<Self>, datalith: Datalith, ids: &HashSet<Uuid>) {
-        while !Self::acquire_multiple_immediately(guards, datalith.clone(), ids).await {
-            time::sleep(Duration::from_millis(10)).await;
+        loop {
+            let changed = datalith.0._file_changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if Self::acquire_multiple_immediately(guards, datalith.clone(), ids).await {
+                break;
+            }
+            changed.await;
         }
     }
 
@@ -150,31 +151,16 @@ impl DeleteGuard {
         datalith: Datalith,
         ids: &HashSet<Uuid>,
     ) -> bool {
-        let mut deleting_files = datalith.0._deleting_files.lock().unwrap();
-        let mut buffer = Vec::with_capacity(ids.len());
-
-        for id in ids {
-            if deleting_files.contains(id) {
-                // there is a lock cannot be acquired
-
-                // rollback
-                for id in buffer {
-                    deleting_files.remove(id);
-                }
-
-                return false;
-            } else {
-                deleting_files.insert(*id);
-                buffer.push(id);
-            }
+        let mut lifecycle = datalith.0._file_lifecycle.lock().unwrap();
+        if ids.iter().any(|id| lifecycle.deleting.contains(id)) {
+            return false;
         }
-
         for id in ids {
+            lifecycle.deleting.insert(*id);
             guards.push(Self {
                 _datalith: datalith.clone(), id: *id
-            })
+            });
         }
-
         true
     }
 }

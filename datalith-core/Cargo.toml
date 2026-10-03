@@ -1,9 +1,9 @@
 [package]
 name = "datalith-core"
-version = "0.1.0"
+version.workspace = true
 authors = ["Magic Len <len@magiclen.org>"]
-edition = "2021"
-rust-version = "1.82"
+edition.workspace = true
+rust-version.workspace = true
 repository = "https://github.com/magiclen/datalith"
 homepage = "https://magiclen.org/datalith"
 keywords = ["datalith", "sqlite", "storage", "file", "oss"]
@@ -13,39 +13,45 @@ license = "MIT"
 include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE"]
 
 [dependencies]
-tokio = { version = "1", features = ["fs", "io-util", "macros"] }
-tokio-cron-scheduler = { version = "0.14", optional = true }
+tokio.workspace = true
+tokio-cron-scheduler = { version = "0.15", optional = true }
 
-tracing = "0.1"
+tracing.workspace = true
 
-sqlx = { version = "0.8", features = [ "runtime-tokio", "sqlite", "chrono", "uuid" ] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "chrono", "uuid"] }
 rdb-pagination = { version = "0.3", features = ["sqlite"] }
 
 num_cpus = "1"
-chrono = "0.4"
+chrono.workspace = true
 
-educe = { version = "0.5", default-features = false, features = ["Debug", "Default", "PartialEq", "Eq", "Hash"] }
+educe = { version = "0.8", default-features = false, features = ["Debug", "Default", "PartialEq", "Eq", "Hash"] }
 once_cell = { version = "1", optional = true }
 
-sha2 = "0.10"
+sha2 = "0.11"
 mime = "0.3"
 mime_guess = "2"
 magic = { version = "0.16", optional = true }
 
-fs4 = { version = "0.13", features = ["tokio"] }
 
-uuid = { version = "1", features = [ "v4" ] }
-rand = "0.9"
-trim-in-place = "0.1"
+uuid.workspace = true
+rand = "0.10"
+trim-in-place = "0.2"
 
-image-convert = { version = "0.20.1", optional = true }
+image-convert = { version = "0.23", optional = true }
 rc-u8-reader = { version = "2", optional = true }
 regex = { version = "1", optional = true }
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2"
+tar = "0.4"
+tempfile = "3"
+hex = "0.4"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "test-util"] }
 manifest-dir-macros = "0.1"
-lazy-static-include = "3"
+lazy-static-include = "4"
 slash-formatter = "3"
 
 [features]

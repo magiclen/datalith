@@ -1,15 +1,20 @@
 /*!
 # Datalith Core
 
-A file management system powered by SQLite for metadata storage and the file system for file storage.
+A Rust library that stores file contents on disk and metadata in SQLite.
+
+Use `DatalithService` to upload media, create image outputs, and import or export archives through stored tasks.
+Tasks can recover after a restart, and files with the same content share one stored copy.
+The direct storage API below is still available for older applications.
 
 ## Data Structures
 
-* `File`: Represents a real, concrete file that is physically stored in the file system.
-* `Resource`: Represents a regular file in any type. One or more `Resource` entries can point to the same `File`.
-* `Image`: Represents any image in a format supported by Datalith. Each `Image` point to multiple `File`s because it includes **the original image file** as well as **thumbnails** in different resolutions and types.
+* `File`: A stored file and its metadata.
+* `Resource`: A file of any type.
+  Several resources can refer to the same file.
+* `Image`: An image with an optional original file and thumbnails in several sizes and formats.
 
-## Examples
+## Direct storage examples
 
 #### Put a File
 
@@ -48,7 +53,7 @@ let datalith = Datalith::new("datalith").await.unwrap();
 let file = datalith.get_file_by_id(Uuid::from_str("c31343fc-eae1-4416-809a-a6d96b69b3b9").unwrap()).await.unwrap();
 
 if let Some(file) = file {
-    // do something
+    // Use the result here.
 } else {
     println!("not found");
 }
@@ -67,9 +72,9 @@ use datalith_core::{mime, Datalith, FileTypeLevel};
 let datalith = Datalith::new("datalith").await.unwrap();
 
 let file_id = datalith.put_file_by_buffer_temporarily(b"Hello world!", Some("plain.txt"), Some((mime::TEXT_PLAIN_UTF_8, FileTypeLevel::Manual))).await.unwrap().id();
-let file = datalith.get_file_by_id(file_id).await.unwrap().unwrap(); // A temporary file can be retrieved using the `get_file_by_id` function only once. After that, it cannot be retrieved again.
+let file = datalith.get_file_by_id(file_id).await.unwrap().unwrap(); // A temporary file can be claimed only once.
 
-// do something
+// Use the result here.
 
 datalith.close().await;
 # }
@@ -112,7 +117,7 @@ let datalith = Datalith::new("datalith").await.unwrap();
 let resource = datalith.get_resource_by_id(Uuid::from_str("c31343fc-eae1-4416-809a-a6d96b69b3b9").unwrap()).await.unwrap();
 
 if let Some(resource) = resource {
-    // do something
+    // Use the result here.
 } else {
     println!("not found");
 }
@@ -131,9 +136,9 @@ use datalith_core::{mime, Datalith, FileTypeLevel};
 let datalith = Datalith::new("datalith").await.unwrap();
 
 let resource_id = datalith.put_resource_by_buffer_temporarily(b"Hello world!", Some("plain.txt"), Some((mime::TEXT_PLAIN_UTF_8, FileTypeLevel::Manual))).await.unwrap().id();
-let resource = datalith.get_resource_by_id(resource_id).await.unwrap().unwrap(); // A temporary resource can be retrieved using the `get_resource_by_id` function only once. After that, it cannot be retrieved again.
+let resource = datalith.get_resource_by_id(resource_id).await.unwrap().unwrap(); // A temporary resource can be claimed only once.
 
-// do something
+// Use the result here.
 
 datalith.close().await;
 # }
@@ -158,7 +163,7 @@ let original_file = image.original_file();
 let thumbnails = image.thumbnails();                   // WebP files (1x, 2x, 3x)
 let fallback_thumbnails = image.fallback_thumbnails(); // JPEG or PNG files (1x, 2x, 3x)
 
-// do something
+// Use the result here.
 
 datalith.close().await;
 # }
@@ -184,6 +189,7 @@ mod magic_cookie_pool;
 #[cfg(feature = "manager")]
 mod manager;
 mod resources;
+mod service;
 
 pub use datalith::*;
 pub use datalith_errors::*;
@@ -194,12 +200,13 @@ pub use functions::get_image_extension;
 pub use image::*;
 #[cfg(feature = "manager")]
 pub use manager::*;
-use mime::{Mime, APPLICATION_OCTET_STREAM};
+use mime::{APPLICATION_OCTET_STREAM, Mime};
 pub use rdb_pagination::{OrderMethod, OrderMethodValue, Pagination, PaginationOptions};
 pub use resources::*;
+pub use service::*;
 
-/// The default mime type.
+/// The default MIME type.
 pub const DEFAULT_MIME_TYPE: Mime = APPLICATION_OCTET_STREAM;
 
-/// A string of an encrypted file ID which can be used as a URL component.
+/// An encrypted file ID for use in a URL.
 pub type IDToken = String;

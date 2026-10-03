@@ -10,7 +10,7 @@ use tokio_cron_scheduler::{Job, JobScheduler};
 
 use crate::{Datalith, DatalithManagerError};
 
-/// The Datalith file storage center manager.
+/// The cleanup manager for a Datalith store.
 #[derive(Clone)]
 pub struct DatalithManager {
     datalith:  Datalith,

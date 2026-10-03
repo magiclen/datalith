@@ -1,101 +1,109 @@
-use std::{
-    net::{AddrParseError, IpAddr},
-    num::ParseIntError,
-    path::PathBuf,
-    str::FromStr,
-    time::Duration,
-};
+use std::{net::IpAddr, path::PathBuf, time::Duration};
 
 use byte_unit::Byte;
-use clap::{CommandFactory, FromArgMatches, Parser};
-use concat_with::concat_line;
+use clap::{Parser, Subcommand};
+use datalith_core::Uuid;
 use terminal_size::terminal_size;
 
-const APP_NAME: &str = "Datalith";
-const CARGO_PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
-const CARGO_PKG_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
-
-const APP_ABOUT: &str = concat!(
-    "\nExamples:\n",
-    concat_line!(prefix "datalith ",
-        "                     # Start the service using the current working directory as the root of the environment",
-        "--environment ./db   # Start the service using `./db` as the root of the environment",
-    )
-);
-
 #[derive(Debug, Parser)]
-#[command(name = APP_NAME)]
+#[command(name = "Datalith", version, author)]
+#[command(about = "Store files and process media with durable tasks.")]
 #[command(term_width = terminal_size().map(|(width, _)| width.0 as usize).unwrap_or(0))]
-#[command(version = CARGO_PKG_VERSION)]
-#[command(author = CARGO_PKG_AUTHORS)]
 pub struct CLIArgs {
-    #[arg(long, visible_alias = "addr", env = "DATALITH_ADDRESS")]
+    #[arg(long, visible_alias = "addr", env = "DATALITH_ADDRESS", global = true)]
     #[cfg_attr(debug_assertions, arg(default_value = "127.0.0.1"))]
     #[cfg_attr(not(debug_assertions), arg(default_value = "0.0.0.0"))]
-    #[arg(value_parser = parse_ip_addr)]
-    #[arg(help = "Assign the address that Datalith binds")]
     pub address: IpAddr,
 
-    #[arg(long, env = "DATALITH_LISTEN_PORT")]
-    #[arg(default_value = "1111")]
-    #[arg(help = "Assign a TCP port for the HTTP service")]
+    #[arg(long, env = "DATALITH_LISTEN_PORT", default_value = "1111", global = true)]
     pub listen_port: u16,
 
-    #[arg(long, env = "DATALITH_ENVIRONMENT")]
+    #[arg(long, env = "DATALITH_ENVIRONMENT", default_value = ".", global = true)]
     #[arg(value_hint = clap::ValueHint::DirPath)]
-    #[arg(default_value = ".")]
-    #[arg(help = "Assign the root path of the environment. This should be a directory path")]
     pub environment: PathBuf,
 
-    #[arg(long, env = "DATALITH_MAX_FILE_SIZE")]
-    #[arg(default_value = "2 GiB")]
-    #[arg(help = "Assign the maximum file size (in bytes) for each of the uploaded files")]
+    #[arg(long, env = "DATALITH_MAX_FILE_SIZE", default_value = "2 GiB", global = true)]
+    #[arg(help = "Maximum upload or import archive size")]
     pub max_file_size: Byte,
 
-    #[arg(long, env = "DATALITH_TEMPORARY_FILE_LIFESPAN")]
-    #[arg(default_value = "60")]
-    #[arg(help = "Assign the lifespan (in seconds) for each of the uploaded temporary files")]
-    #[arg(long_help = "Assign the lifespan (in seconds) for each of the uploaded temporary \
-                       files. The lifespan ranges from 1 second to 10,000 hours")]
-    #[arg(value_parser = parse_duration_sec)]
+    #[arg(long, env = "DATALITH_TEMPORARY_FILE_LIFESPAN", default_value = "60", global = true)]
+    #[arg(value_parser = parse_duration)]
+    #[arg(help = "Default temporary file lifespan for the legacy Rust API in seconds")]
     pub temporary_file_lifespan: Duration,
 
+    #[arg(long, env = "DATALITH_WORKERS", default_value = "1", global = true)]
+    #[arg(value_parser = clap::value_parser!(u16).range(1..=64))]
+    pub workers: u16,
+
+    #[arg(long, env = "DATALITH_TASK_RETENTION_SECONDS", default_value = "604800", global = true)]
+    #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+    pub task_retention_seconds: u64,
+
     #[cfg(feature = "image-convert")]
-    #[arg(long, env = "DATALITH_MAX_IMAGE_RESOLUTION")]
-    #[arg(default_value = "50000000")]
-    #[arg(help = "Assign the maximum resolution (in pixels) for each of the uploaded images")]
+    #[arg(long, env = "DATALITH_MAX_IMAGE_RESOLUTION", default_value = "50000000", global = true)]
+    #[arg(value_parser = clap::value_parser!(u32).range(1..))]
     pub max_image_resolution: u32,
 
     #[cfg(feature = "image-convert")]
-    #[arg(long, env = "DATALITH_MAX_IMAGE_RESOLUTION_MULTIPLIER")]
-    #[arg(default_value = "3")]
-    #[arg(help = "Assign the maximum image resolution multiplier for each of the uploaded images")]
+    #[arg(
+        long,
+        env = "DATALITH_MAX_IMAGE_RESOLUTION_MULTIPLIER",
+        default_value = "3",
+        global = true
+    )]
+    #[arg(value_parser = clap::value_parser!(u8).range(1..))]
     pub max_image_resolution_multiplier: u8,
+
+    #[cfg(feature = "image-convert")]
+    #[arg(long, env = "DATALITH_MAX_IMAGE_FRAMES", default_value = "500", global = true)]
+    #[arg(value_parser = clap::value_parser!(u32).range(1..))]
+    pub max_image_frames: u32,
+
+    #[cfg(feature = "image-convert")]
+    #[arg(
+        long,
+        env = "DATALITH_MAX_IMAGE_TOTAL_PIXELS",
+        default_value = "100000000",
+        global = true
+    )]
+    #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+    pub max_image_total_pixels: u64,
+
+    #[cfg(feature = "image-convert")]
+    #[arg(long, env = "DATALITH_MAX_IMAGE_VARIANTS", default_value = "16", global = true)]
+    #[arg(value_parser = clap::value_parser!(u16).range(1..))]
+    pub max_image_variants: u16,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
 }
 
-#[inline]
-fn parse_ip_addr(arg: &str) -> Result<IpAddr, AddrParseError> {
-    IpAddr::from_str(arg)
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Start the HTTP service.
+    Serve,
+    /// Export all media or a selected list of media IDs.
+    Export {
+        #[arg(value_hint = clap::ValueHint::FilePath)]
+        output: PathBuf,
+        #[arg(long = "id")]
+        ids:    Vec<Uuid>,
+    },
+    /// Import a Datalith archive into this environment.
+    Import {
+        #[arg(value_hint = clap::ValueHint::FilePath)]
+        file: PathBuf,
+    },
 }
 
-#[inline]
-fn parse_duration_sec(arg: &str) -> Result<Duration, ParseIntError> {
-    Ok(Duration::from_secs(arg.parse()?))
+fn parse_duration(value: &str) -> Result<Duration, String> {
+    let seconds: u64 = value.parse().map_err(|_| "Expected a positive number of seconds.")?;
+    if !(1..=36_000_000).contains(&seconds) {
+        return Err("The lifespan must be between 1 and 36000000 seconds.".into());
+    }
+    Ok(Duration::from_secs(seconds))
 }
 
 pub fn get_args() -> CLIArgs {
-    let args = CLIArgs::command();
-
-    let about = format!("{APP_NAME} {CARGO_PKG_VERSION}\n{CARGO_PKG_AUTHORS}\n{APP_ABOUT}");
-
-    let args = args.about(about);
-
-    let matches = args.get_matches();
-
-    match CLIArgs::from_arg_matches(&matches) {
-        Ok(args) => args,
-        Err(err) => {
-            err.exit();
-        },
-    }
+    CLIArgs::parse()
 }

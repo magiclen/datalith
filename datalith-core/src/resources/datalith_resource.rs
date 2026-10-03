@@ -5,25 +5,25 @@ use uuid::Uuid;
 
 use crate::DatalithFile;
 
-/// A struct that represents an resource.
+/// A resource that refers to a stored file.
 #[derive(Debug, Educe)]
 #[educe(PartialEq, Eq, Hash)]
 pub struct DatalithResource {
     id:           Uuid,
-    #[educe(Eq(ignore), Hash(ignore))]
+    #[educe(PartialEq(ignore), Hash(ignore))]
     created_at:   DateTime<Local>,
-    #[educe(Eq(ignore), Hash(ignore))]
+    #[educe(PartialEq(ignore), Hash(ignore))]
     file_type:    Mime,
-    #[educe(Eq(ignore), Hash(ignore))]
+    #[educe(PartialEq(ignore), Hash(ignore))]
     file_name:    String,
-    #[educe(Eq(ignore), Hash(ignore))]
+    #[educe(PartialEq(ignore), Hash(ignore))]
     file:         DatalithFile,
-    #[educe(Eq(ignore), Hash(ignore))]
+    #[educe(PartialEq(ignore), Hash(ignore))]
     is_temporary: bool,
 }
 
 impl DatalithResource {
-    /// Create a resource instance.
+    /// Create a resource value.
     #[inline]
     pub(crate) fn new<Tz: TimeZone>(
         id: impl Into<Uuid>,
@@ -49,31 +49,31 @@ where {
 }
 
 impl DatalithResource {
-    /// Retrieve the resource ID (UUID).
+    /// Get the resource ID (UUID).
     #[inline]
     pub const fn id(&self) -> Uuid {
         self.id
     }
 
-    /// Retrieve the creation time.
+    /// Get the creation time.
     #[inline]
     pub const fn created_at(&self) -> DateTime<Local> {
         self.created_at
     }
 
-    /// Retrieve the file type (MIME).
+    /// Get the file type (MIME).
     #[inline]
     pub const fn file_type(&self) -> &Mime {
         &self.file_type
     }
 
-    /// Retrieve the file name.
+    /// Get the file name.
     #[inline]
     pub const fn file_name(&self) -> &String {
         &self.file_name
     }
 
-    /// Retrieve the file.
+    /// Get the file.
     #[inline]
     pub const fn file(&self) -> &DatalithFile {
         &self.file

@@ -7,19 +7,19 @@ pub use datalith_resource::*;
 use educe::Educe;
 use mime::Mime;
 use rdb_pagination::{
-    prelude::*, OrderByOptions, OrderMethod, Pagination, PaginationOptions, SqlJoin,
-    SqlOrderByComponent,
+    OrderByOptions, OrderMethod, Pagination, PaginationOptions, SqlJoin, SqlOrderByComponent,
+    prelude::*,
 };
 use tokio::io::AsyncRead;
 use uuid::Uuid;
 
 use crate::{
+    Datalith, DatalithFile, DatalithReadError, DatalithWriteError, FileTypeLevel,
     functions::{get_current_timestamp, get_file_name},
     guard::DeleteGuard,
-    Datalith, DatalithFile, DatalithReadError, DatalithWriteError, FileTypeLevel,
 };
 
-/// A struct that defines the ordering options for querying resources.
+/// Sort options for resource queries.
 #[derive(Debug, Clone, Educe, OrderByOptions)]
 #[educe(Default)]
 #[orderByOptions(name = resources)]
@@ -34,7 +34,7 @@ pub struct DatalithResourceOrderBy {
 
 // Upload
 impl Datalith {
-    /// Input a resource into Datalith using a buffer.
+    /// Store a resource from a buffer.
     #[inline]
     pub async fn put_resource_by_buffer(
         &self,
@@ -49,9 +49,9 @@ impl Datalith {
         self.put_resource(file, file_name, file_type, false).await
     }
 
-    /// Temporarily input a resource into Datalith using a buffer.
+    /// Store a single-use resource from a buffer.
     ///
-    /// The term `temporarily` means the file can be retrieved using the `get_resource_by_id` function only once. After that, it cannot be retrieved again.
+    /// A temporary resource can be claimed only once through `get_resource_by_id`.
     #[inline]
     pub async fn put_resource_by_buffer_temporarily(
         &self,
@@ -66,7 +66,7 @@ impl Datalith {
         self.put_resource(file, file_name, file_type, true).await
     }
 
-    /// Input a resource into Datalith using a file path.
+    /// Store a resource from a file path.
     #[inline]
     pub async fn put_resource_by_path(
         &self,
@@ -81,9 +81,9 @@ impl Datalith {
         self.put_resource(file, file_name, file_type, false).await
     }
 
-    /// Temporarily input a resource into Datalith using a file path.
+    /// Store a single-use resource from a file path.
     ///
-    /// The term `temporarily` means the file can be retrieved using the `get_resource_by_id` function only once. After that, it cannot be retrieved again.
+    /// A temporary resource can be claimed only once through `get_resource_by_id`.
     #[inline]
     pub async fn put_resource_by_path_temporarily(
         &self,
@@ -98,7 +98,7 @@ impl Datalith {
         self.put_resource(file, file_name, file_type, true).await
     }
 
-    /// Input a resource into Datalith using a reader.
+    /// Store a resource from a reader.
     #[inline]
     pub async fn put_resource_by_reader(
         &self,
@@ -121,9 +121,9 @@ impl Datalith {
         self.put_resource(file, file_name, file_type, false).await
     }
 
-    /// Temporarily input a resource into Datalith using a reader.
+    /// Store a single-use resource from a reader.
     ///
-    /// The term `temporarily` means the file can be retrieved using the `get_resource_by_id` function only once. After that, it cannot be retrieved again.
+    /// A temporary resource can be claimed only once through `get_resource_by_id`.
     #[inline]
     pub async fn put_resource_by_reader_temporarily(
         &self,
@@ -189,7 +189,7 @@ impl Datalith {
 
         let id = Uuid::new_v4();
 
-        // insert resources
+        // Save the resource metadata.
         {
             #[rustfmt::skip]
             let result = sqlx::query(
@@ -225,7 +225,7 @@ impl Datalith {
 
 // Download
 impl Datalith {
-    /// Check whether the resource exists or not.
+    /// Check whether the resource exists.
     pub async fn check_resource_exist(
         &self,
         id: impl Into<Uuid>,
@@ -252,7 +252,7 @@ impl Datalith {
         Ok(row.is_some())
     }
 
-    /// Retrieve the resource metadata using an ID.
+    /// Get the resource metadata using an ID.
     pub async fn get_resource_by_id(
         &self,
         id: impl Into<Uuid>,
@@ -261,62 +261,41 @@ impl Datalith {
 
         let id = id.into();
 
-        let is_temporary = {
-            let result = sqlx::query(
-                "
-                    UPDATE
-                        `resources`
-                    SET
-                        `expired_at` = ?
-                    WHERE
-                        `id` = ?
-                            AND `expired_at` > ?
-                ",
-            )
-            .bind(current_timestamp)
-            .bind(id)
-            .bind(current_timestamp)
-            .execute(&self.0.db)
-            .await?;
-
-            result.rows_affected() > 0
-        };
-
-        #[rustfmt::skip]
-        let row: Option<(i64, String, String, Uuid)> = sqlx::query_as(
-            "
-                SELECT
-                    `created_at`,
-                    `file_type`,
-                    `file_name`,
-                    `file_id`
-                FROM
-                    `resources`
-                WHERE
-                    `id` = ?
-                        AND ( `expired_at` IS NULL OR `expired_at` = ? )
-            ",
+        let row: Option<(i64, String, String, Uuid, bool)> = sqlx::query_as(
+            "SELECT created_at, file_type, file_name, file_id, expired_at IS NOT NULL FROM \
+             resources
+             WHERE id = ? AND (expired_at IS NULL OR expired_at > ?)",
         )
         .bind(id)
         .bind(current_timestamp)
         .fetch_optional(&self.0.db)
         .await?;
 
-        if let Some((created_at, file_type, file_name, file_id)) = row {
-            let file = self.get_file_by_id(file_id).await?;
-
-            if let Some(file) = file {
-                let created_at = DateTime::from_timestamp_millis(created_at).unwrap();
-
-                return Ok(Some(DatalithResource::new(
-                    id,
-                    created_at,
-                    Mime::from_str(&file_type).unwrap(),
-                    file_name,
-                    file,
-                    is_temporary,
-                )));
+        if let Some((created_at, file_type, file_name, file_id, is_temporary)) = row
+            && let Some(file) = self.get_file_by_id(file_id).await?
+        {
+            if is_temporary {
+                let claimed = sqlx::query(
+                    "UPDATE resources SET expired_at = 0 WHERE id = ? AND expired_at > ?",
+                )
+                .bind(id)
+                .bind(get_current_timestamp())
+                .execute(&self.0.db)
+                .await?;
+                if claimed.rows_affected() == 0 {
+                    return Ok(None);
+                }
             }
+            let created_at = DateTime::from_timestamp_millis(created_at).unwrap();
+
+            return Ok(Some(DatalithResource::new(
+                id,
+                created_at,
+                Mime::from_str(&file_type).unwrap(),
+                file_name,
+                file,
+                is_temporary,
+            )));
         }
 
         Ok(None)
@@ -325,94 +304,47 @@ impl Datalith {
     /// List resource IDs.
     pub async fn list_resource_ids(
         &self,
-        mut pagination_options: PaginationOptions<DatalithResourceOrderBy>,
+        pagination_options: PaginationOptions<DatalithResourceOrderBy>,
     ) -> Result<(Vec<Uuid>, Pagination), DatalithReadError> {
-        loop {
-            let (joins, order_by_components) = pagination_options.order_by.to_sql();
-
-            let mut sql_join = String::new();
-            let mut sql_order_by = String::new();
-            let mut sql_limit_offset = String::new();
-
-            SqlJoin::format_sqlite_join_clauses(&joins, &mut sql_join);
-            SqlOrderByComponent::format_sqlite_order_by_components(
-                &order_by_components,
-                &mut sql_order_by,
-            );
-            pagination_options.to_sqlite_limit_offset(&mut sql_limit_offset);
-
-            let mut tx = self.0.db.begin().await?;
-
-            let total_items = {
-                let row: (u32,) = {
-                    #[rustfmt::skip]
-                    let query = sqlx::query_as(
-                        "
-                            SELECT
-                                COUNT(*)
-                            FROM
-                                `resources`
-                        "
-                    );
-
-                    query.fetch_one(&mut *tx).await?
-                };
-
-                row.0
-            };
-
-            let rows: Vec<(Uuid,)> = {
-                #[rustfmt::skip]
-                let sql = format!(
-                    "
-                        SELECT
-                            `id`
-                        FROM
-                            `resources`
-                        {sql_join}
-                        WHERE
-                            (`expired_at` IS NULL OR `expired_at` > ?)
-                        {sql_order_by}
-                        {sql_limit_offset}
-                    "
-                );
-
-                let current_timestamp = get_current_timestamp();
-
-                let query = sqlx::query_as(&sql).bind(current_timestamp);
-
-                query.fetch_all(&mut *tx).await?
-            };
-
-            let total_items = total_items as usize;
-
-            drop(tx);
-
-            let pagination = Pagination::new()
-                .items_per_page(pagination_options.items_per_page)
-                .total_items(total_items)
-                .page(pagination_options.page);
-
-            if rows.is_empty() {
-                if total_items > 0 && pagination_options.page > 1 {
-                    pagination_options.page = pagination.get_total_pages();
-
-                    continue;
-                } else {
-                    return Ok((Vec::new(), pagination));
-                }
-            }
-
-            let ids = rows.into_iter().map(|(id,)| id).collect::<Vec<Uuid>>();
-
-            return Ok((ids, pagination));
-        }
+        let current_timestamp = get_current_timestamp();
+        let (joins, order_by_components) = pagination_options.order_by.to_sql();
+        let mut sql_join = String::new();
+        let mut sql_order_by = String::new();
+        let mut sql_limit_offset = String::new();
+        SqlJoin::format_sqlite_join_clauses(&joins, &mut sql_join);
+        SqlOrderByComponent::format_sqlite_order_by_components(
+            &order_by_components,
+            &mut sql_order_by,
+        );
+        pagination_options.to_sqlite_limit_offset(&mut sql_limit_offset);
+        let mut tx = self.0.db.begin().await?;
+        let (total_items,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM resources WHERE expired_at IS NULL OR expired_at > ?",
+        )
+        .bind(current_timestamp)
+        .fetch_one(&mut *tx)
+        .await?;
+        let sql = format!(
+            "SELECT id FROM resources {sql_join} WHERE expired_at IS NULL OR expired_at > ? \
+             {sql_order_by} {sql_limit_offset}",
+        );
+        let rows: Vec<(Uuid,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(current_timestamp)
+            .fetch_all(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        let pagination = Pagination::new()
+            .items_per_page(pagination_options.items_per_page)
+            .total_items(total_items as usize)
+            .page(pagination_options.page);
+        Ok((rows.into_iter().map(|(id,)| id).collect(), pagination))
     }
 }
 
 // Delete
 impl Datalith {
-    /// Remove a resource using an ID. The related `DatalithResource` instances should be dropped before calling this function.
+    /// Remove a resource by ID.
+    /// Drop all related `DatalithResource` values before calling this function.
     #[inline]
     pub async fn delete_resource_by_id(
         &self,
@@ -437,29 +369,30 @@ impl Datalith {
 
         if let Some((file_id,)) = row {
             let guard = DeleteGuard::new(self.clone(), file_id).await;
-
+            if sqlx::query("SELECT 1 FROM resources WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.0.db)
+                .await?
+                .is_none()
+            {
+                return Ok(false);
+            }
             self.wait_for_opening_files(&guard).await?;
 
-            #[rustfmt::skip]
-            let result = sqlx::query(
-                "
-                    DELETE FROM
-                        `resources`
-                    WHERE
-                        `id` = ?
-                ",
-            )
-            .bind(id)
-            .execute(&self.0.db)
-            .await?;
-
+            let mut tx = self.0.db.begin().await?;
+            let result = sqlx::query("DELETE FROM resources WHERE id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
             if result.rows_affected() == 0 {
                 return Ok(false);
             }
-
-            // delete the related file
-
-            self.delete_file_by_id_inner(file_id, guard).await?;
+            let removed = Self::release_file_references_in_transaction(&mut tx, file_id, 1).await?;
+            tx.commit().await?;
+            if removed {
+                self.remove_untracked_file(file_id).await?;
+            }
+            drop(guard);
 
             Ok(true)
         } else {

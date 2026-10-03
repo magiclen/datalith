@@ -5,7 +5,7 @@ use std::{
 
 use tokio_cron_scheduler::JobSchedulerError;
 
-/// Errors occurred during `DatalithManager` creation.
+/// Errors when creating a `DatalithManager`.
 #[derive(Debug)]
 pub enum DatalithManagerError {
     JobSchedulerError(JobSchedulerError),

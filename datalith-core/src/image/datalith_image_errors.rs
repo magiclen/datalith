@@ -9,7 +9,7 @@ use image_convert::MagickError;
 
 use crate::{DatalithReadError, DatalithWriteError};
 
-/// Errors occurred during Datalith image write operations.
+/// Errors when storing or converting an image.
 #[derive(Debug)]
 pub enum DatalithImageWriteError {
     DatalithWriteError(DatalithWriteError),

@@ -1,0 +1,2571 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Datalith API",
+    "version": "1.0.0",
+    "description": "A media store that runs as one instance, with file contents on disk and metadata in SQLite. IDs are UUID strings. Dates are UTC RFC 3339 strings. File sizes and page totals are decimal strings. A trusted backend or reverse proxy must handle authentication. This release does not include audio or video conversion or a new Node.js client.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "/api/v1"
+    }
+  ],
+  "security": [],
+  "paths": {
+    "/uploads": {
+      "post": {
+        "operationId": "upload",
+        "summary": "Save an upload and create a task",
+        "responses": {
+          "202": {
+            "description": "Save an upload and create a task",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "An ASCII key stored with the task for seven days by default. The same key and input return the existing task. Different input with the same key returns 409."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "options": {
+                    "$ref": "#/components/schemas/UploadOptions"
+                  }
+                }
+              },
+              "encoding": {
+                "options": {
+                  "contentType": "application/json"
+                }
+              }
+            }
+          }
+        },
+        "description": "The service saves the upload and task before it responds. It does not wait for image conversion. Without options, it creates a permanent resource. The upload is streamed to disk."
+      }
+    },
+    "/tasks/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getTask",
+        "summary": "Read task state and result",
+        "responses": {
+          "200": {
+            "description": "Read task state and result",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/tasks/{id}/cancel": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "cancelTask",
+        "summary": "Ask a task to stop between processing steps",
+        "responses": {
+          "202": {
+            "description": "Ask a task to stop between processing steps",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/tasks/{id}/retry": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "retryTask",
+        "summary": "Retry a failed or cancelled task",
+        "responses": {
+          "202": {
+            "description": "Retry a failed or cancelled task",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/media": {
+      "get": {
+        "operationId": "listMedia",
+        "summary": "List available media",
+        "responses": {
+          "200": {
+            "description": "List available media",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "per_page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          }
+        ]
+      }
+    },
+    "/media/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getMedia",
+        "summary": "Read metadata without using a single-use download claim",
+        "responses": {
+          "200": {
+            "description": "Read metadata without using a single-use download claim",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Media"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteMedia",
+        "summary": "Delete media and clean up unused files later",
+        "responses": {
+          "204": {
+            "description": "Delete media and clean up unused files later",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/media/{id}/tasks": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "processMedia",
+        "summary": "Create an image task from a saved original",
+        "responses": {
+          "202": {
+            "description": "Create an image task from a saved original",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "An ASCII key stored with the task for seven days by default. The same key and input return the existing task. Different input with the same key returns 409."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessOptions"
+              }
+            }
+          }
+        },
+        "description": "The original file must be available. A single-use source returns 409. The result keeps the source expiry time and is not saved if that time has passed."
+      }
+    },
+    "/exports": {
+      "post": {
+        "operationId": "exportMedia",
+        "summary": "Export all media or selected IDs",
+        "responses": {
+          "202": {
+            "description": "Export all media or selected IDs",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "An ASCII key stored with the task for seven days by default. The same key and input return the existing task. Different input with the same key returns 409."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportOptions"
+              }
+            }
+          }
+        },
+        "description": "Export pauses content writes, file cleanup, and single-use downloads. Normal downloads continue. The archive contains a versioned manifest and one copy of each file content."
+      }
+    },
+    "/imports": {
+      "post": {
+        "operationId": "importMedia",
+        "summary": "Check and import a Datalith archive",
+        "responses": {
+          "202": {
+            "description": "Check and import a Datalith archive",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "An ASCII key stored with the task for seven days by default. The same key and input return the existing task. Different input with the same key returns 409."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "description": "Import keeps IDs where possible and skips matching items. An ID used by different data is replaced with a new ID. The result includes the old-to-new ID maps. Importing the same archive again does not create duplicates."
+      }
+    },
+    "/media/{id}/content": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getContent",
+        "summary": "Read media content",
+        "responses": {
+          "200": {
+            "description": "Full content",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The value is bytes. Single-use content does not send this header."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "206": {
+            "description": "Requested byte range",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The value is bytes. Single-use content does not send this header."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The stored content matches the cache condition",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The value is bytes. Single-use content does not send this header."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "416": {
+            "description": "The requested range is outside the file or is not supported",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            },
+            "description": "One byte range. It may have a start and end, only a start, or a suffix length to read from the end."
+          },
+          {
+            "name": "variant",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "An image variant name. Use original for the saved source file, or leave this out for the default variant."
+          },
+          {
+            "name": "multiplier",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 255
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "webp",
+                "png",
+                "jpeg",
+                "gif"
+              ]
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "description": "HEAD does not use a download claim and ignores Range. GET claims a single-use download before sending the full file. Only one request can claim it. It ignores cache conditions and Range. An interrupted download does not restore the claim. The service checks that content exists before it checks cache conditions."
+      },
+      "head": {
+        "operationId": "headContent",
+        "summary": "Read media content",
+        "responses": {
+          "200": {
+            "description": "Full content",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The value is bytes. Single-use content does not send this header."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "206": {
+            "description": "Requested byte range",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The value is bytes. Single-use content does not send this header."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The stored content matches the cache condition",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The value is bytes. Single-use content does not send this header."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "416": {
+            "description": "The requested range is outside the file or is not supported",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            },
+            "description": "One byte range. It may have a start and end, only a start, or a suffix length to read from the end."
+          },
+          {
+            "name": "variant",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "An image variant name. Use original for the saved source file, or leave this out for the default variant."
+          },
+          {
+            "name": "multiplier",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 255
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "webp",
+                "png",
+                "jpeg",
+                "gif"
+              ]
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "description": "HEAD does not use a download claim and ignores Range. GET claims a single-use download before sending the full file. Only one request can claim it. It ignores cache conditions and Range. An interrupted download does not restore the claim. The service checks that content exists before it checks cache conditions."
+      }
+    },
+    "/tasks/{id}/artifact": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getArtifact",
+        "summary": "Download an exported archive",
+        "responses": {
+          "200": {
+            "description": "Full content",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The value is bytes. Single-use content does not send this header."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "206": {
+            "description": "Requested byte range",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The value is bytes. Single-use content does not send this header."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The stored content matches the cache condition",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The value is bytes. Single-use content does not send this header."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "416": {
+            "description": "The requested range is outside the file or is not supported",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            },
+            "description": "One byte range. It may have a start and end, only a start, or a suffix length to read from the end."
+          }
+        ],
+        "description": "HEAD does not use a download claim and ignores Range. GET claims a single-use download before sending the full file. Only one request can claim it. It ignores cache conditions and Range. An interrupted download does not restore the claim. The service checks that content exists before it checks cache conditions."
+      },
+      "head": {
+        "operationId": "headArtifact",
+        "summary": "Download an exported archive",
+        "responses": {
+          "200": {
+            "description": "Full content",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The value is bytes. Single-use content does not send this header."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "206": {
+            "description": "Requested byte range",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The value is bytes. Single-use content does not send this header."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The stored content matches the cache condition",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The value is bytes. Single-use content does not send this header."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "416": {
+            "description": "The requested range is outside the file or is not supported",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            },
+            "description": "One byte range. It may have a start and end, only a start, or a suffix length to read from the end."
+          }
+        ],
+        "description": "HEAD does not use a download claim and ignores Range. GET claims a single-use download before sending the full file. Only one request can claim it. It ignores cache conditions and Range. An interrupted download does not restore the claim. The service checks that content exists before it checks cache conditions."
+      }
+    },
+    "/capabilities": {
+      "get": {
+        "operationId": "getCapabilities",
+        "summary": "Read supported media types, limits, and planned output formats",
+        "responses": {
+          "200": {
+            "description": "Read supported media types, limits, and planned output formats",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Capabilities"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "getOpenApi",
+        "summary": "Read this OpenAPI document",
+        "responses": {
+          "200": {
+            "description": "OpenAPI 3.1 document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          },
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "error",
+          "request_id"
+        ]
+      },
+      "MediaKind": {
+        "type": "string",
+        "enum": [
+          "resource",
+          "image",
+          "audio",
+          "video"
+        ],
+        "description": "Audio and video are planned for a future release. Both currently return 415."
+      },
+      "Retention": {
+        "type": "object",
+        "properties": {
+          "expires_in_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 36000000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For new uploads, the lifetime starts when processing is complete and the media is saved. Processing an existing source keeps its original expiry time."
+          },
+          "single_use": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "CropRatio": {
+        "type": "object",
+        "properties": {
+          "width": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "height": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        },
+        "required": [
+          "width",
+          "height"
+        ],
+        "additionalProperties": false
+      },
+      "ImageVariantSpec": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "default": "default",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "not": {
+              "const": "original"
+            },
+            "description": "The name must be unique in this request. The name original is reserved."
+          },
+          "max_width": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_height": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "crop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CropRatio"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "multipliers": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 255
+            },
+            "minItems": 1,
+            "default": [
+              1,
+              2,
+              3
+            ],
+            "uniqueItems": true,
+            "contains": {
+              "const": 1
+            },
+            "description": "The list must include 1. Each value must be at most capabilities.image.limits.max_multiplier."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImageOptions": {
+        "type": "object",
+        "properties": {
+          "variants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImageVariantSpec"
+            },
+            "minItems": 1,
+            "default": [
+              {
+                "name": "default",
+                "multipliers": [
+                  1,
+                  2,
+                  3
+                ]
+              }
+            ]
+          },
+          "save_original": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "UploadOptions": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MediaKind"
+              }
+            ],
+            "default": "resource"
+          },
+          "file_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "file_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retention": {
+            "$ref": "#/components/schemas/Retention"
+          },
+          "image": {
+            "$ref": "#/components/schemas/ImageOptions"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProcessOptions": {
+        "type": "object",
+        "properties": {
+          "image": {
+            "$ref": "#/components/schemas/ImageOptions"
+          }
+        },
+        "additionalProperties": false,
+        "description": "The original file must be available. A single-use source returns 409. The result keeps the source expiry time and is not saved if that time has passed."
+      },
+      "ExportOptions": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "minItems": 1,
+                "maxItems": 100000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "MediaFile": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "file_size": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "A decimal string that JavaScript can read with BigInt."
+          },
+          "file_type": {
+            "type": "string"
+          },
+          "file_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "sha256",
+          "file_size",
+          "file_type",
+          "file_name"
+        ]
+      },
+      "Variant": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "multiplier": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "webp",
+              "png",
+              "jpeg",
+              "gif"
+            ]
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "animated": {
+            "type": "boolean"
+          },
+          "file": {
+            "$ref": "#/components/schemas/MediaFile"
+          },
+          "content_path": {
+            "type": "string",
+            "description": "A relative URL for this variant, multiplier, and format."
+          },
+          "recipe": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageVariantSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "multiplier",
+          "format",
+          "width",
+          "height",
+          "animated",
+          "file",
+          "content_path",
+          "recipe"
+        ]
+      },
+      "Media": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MediaKind"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "file_name": {
+            "type": "string"
+          },
+          "original": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MediaFile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "variants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Variant"
+            }
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "single_use": {
+            "type": "boolean"
+          },
+          "consumed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "animated": {
+            "type": "boolean"
+          },
+          "frame_count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "created_at",
+          "file_name",
+          "original",
+          "variants",
+          "expires_at",
+          "single_use",
+          "consumed_at",
+          "animated",
+          "frame_count"
+        ]
+      },
+      "MediaPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Media"
+            }
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "per_page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "total": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "A decimal string that JavaScript can read with BigInt."
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "per_page",
+          "total"
+        ]
+      },
+      "TaskError": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ]
+      },
+      "ExportResult": {
+        "type": "object",
+        "properties": {
+          "artifact_path": {
+            "type": "string"
+          },
+          "media_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "artifact": {
+            "$ref": "#/components/schemas/MediaFile"
+          }
+        },
+        "required": [
+          "artifact_path",
+          "media_count",
+          "artifact"
+        ]
+      },
+      "ImportResult": {
+        "type": "object",
+        "properties": {
+          "imported": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "skipped": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "id_map": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "archive_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "file_id_map": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "required": [
+          "imported",
+          "skipped",
+          "id_map",
+          "archive_id",
+          "file_id_map"
+        ]
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "resource",
+              "image",
+              "import",
+              "export"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "stage": {
+            "type": "string"
+          },
+          "completed_units": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "total_units": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of times processing has started. This is zero before the first attempt."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Media"
+              },
+              {
+                "$ref": "#/components/schemas/ExportResult"
+              },
+              {
+                "$ref": "#/components/schemas/ImportResult"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Upload and image tasks return Media. Export tasks return ExportResult. Import tasks return ImportResult."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "stage",
+          "completed_units",
+          "total_units",
+          "attempt",
+          "created_at",
+          "updated_at",
+          "result",
+          "error"
+        ]
+      },
+      "ImageLimits": {
+        "type": "object",
+        "properties": {
+          "max_pixels": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_frames": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_total_pixels": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_variants": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_multiplier": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "max_pixels",
+          "max_frames",
+          "max_total_pixels",
+          "max_variants",
+          "max_multiplier"
+        ]
+      },
+      "Capabilities": {
+        "type": "object",
+        "properties": {
+          "api_version": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "media": {
+            "type": "object",
+            "properties": {
+              "resource": {
+                "type": "boolean"
+              },
+              "image": {
+                "type": "boolean"
+              },
+              "audio": {
+                "type": "boolean"
+              },
+              "video": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "resource",
+              "image",
+              "audio",
+              "video"
+            ]
+          },
+          "image": {
+            "type": "object",
+            "properties": {
+              "engine": {
+                "type": "string"
+              },
+              "animated_inputs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "outputs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "apng_requires_ffmpeg": {
+                "type": "boolean"
+              },
+              "apng_timing_precision_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "limits": {
+                "$ref": "#/components/schemas/ImageLimits"
+              }
+            },
+            "required": [
+              "engine",
+              "animated_inputs",
+              "outputs",
+              "apng_requires_ffmpeg",
+              "apng_timing_precision_ms",
+              "limits"
+            ]
+          },
+          "max_file_size": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "A decimal string that JavaScript can read with BigInt."
+          },
+          "task_retention_seconds": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "task_notifications": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cancellation": {
+            "type": "string"
+          },
+          "archive_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "export_pauses_writes": {
+            "type": "boolean"
+          },
+          "future_profiles": {
+            "type": "object",
+            "properties": {
+              "audio": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "video": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "audio",
+              "video"
+            ]
+          }
+        },
+        "required": [
+          "api_version",
+          "version",
+          "media",
+          "image",
+          "max_file_size",
+          "task_retention_seconds",
+          "task_notifications",
+          "cancellation",
+          "archive_version",
+          "export_pauses_writes",
+          "future_profiles"
+        ]
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "An error object with a code and message. Writes paused by an export return 503 with Retry-After: 1.",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Request ID created by the server."
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    }
+  }
+}

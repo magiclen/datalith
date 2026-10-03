@@ -1,9 +1,9 @@
 [package]
 name = "datalith"
-version = "0.1.0"
+version.workspace = true
 authors = ["Magic Len <len@magiclen.org>"]
-edition = "2021"
-rust-version = "1.83"
+edition.workspace = true
+rust-version.workspace = true
 repository = "https://github.com/magiclen/datalith"
 homepage = "https://magiclen.org/datalith"
 keywords = ["datalith", "sqlite", "storage", "file", "oss"]
@@ -13,29 +13,28 @@ license = "MIT"
 include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE"]
 
 [dependencies]
-datalith-core = { version = "0.1", path = "../datalith-core", default-features = false, features = ["manager"] }
+datalith-core = { version = "0.2", path = "../datalith-core", default-features = false }
 
 clap = { version = "4", features = ["derive", "env"] }
-concat-with = "0.2"
 terminal_size = "0.4"
 
 anyhow = "1"
 
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros"] }
-tokio-util = { version = "0.7", features = ["io"] }
+tokio.workspace = true
 
-serde_json = "1"
+serde_json.workspace = true
+serde.workspace = true
+tracing.workspace = true
 url-escape = "0.1"
 byte-unit = { version = "5", features = ["serde"]}
 
-rocket = { version = "0.5", features = ["uuid"]}
-rocket-multipart-form-data = "0.10"
-rocket-cache-response = "0.6"
-rocket-etag-if-none-match = "0.4"
+rocket = { version = "0.5", features = ["uuid", "json"]}
+rocket-multipart-form-data = "0.11"
 
-validators = { version = "0.25", default-features = false, features = ["derive", "boolean", "rocket"]}
 
 [features]
 default = ["magic", "image-convert"]
 magic = ["datalith-core/magic"]
 image-convert = ["datalith-core/image-convert"]
+[dev-dependencies]
+tempfile = "3"

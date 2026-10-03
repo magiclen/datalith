@@ -6,7 +6,7 @@ use std::{
 
 use mime::Mime;
 
-/// Errors occurred during Datalith creation.
+/// Errors when creating a Datalith store.
 #[derive(Debug)]
 pub enum DatalithCreateError {
     IOError(io::Error),
@@ -57,7 +57,7 @@ impl Display for DatalithCreateError {
 
 impl Error for DatalithCreateError {}
 
-/// Errors occurred during Datalith read operations.
+/// Errors when reading from Datalith.
 #[derive(Debug)]
 pub enum DatalithReadError {
     IOError(io::Error),
@@ -90,10 +90,10 @@ impl Display for DatalithReadError {
 
 impl Error for DatalithReadError {}
 
-/// Errors occurred during Datalith write operations.
+/// Errors when writing to Datalith.
 #[derive(Debug)]
 pub enum DatalithWriteError {
-    FileTypeInvalid { file_type: Mime, expected_file_type: Mime },
+    FileTypeInvalid { file_type: Box<Mime>, expected_file_type: Box<Mime> },
     FileLengthTooLarge { expected_file_length: u64, actual_file_length: u64 },
     IOError(io::Error),
     SQLError(sqlx::Error),

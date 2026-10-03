@@ -1,35 +1,38 @@
 mod datalith_image;
 mod datalith_image_errors;
-mod sync;
 
-use std::{collections::HashSet, path::Path, str::FromStr, sync::atomic::Ordering};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    str::FromStr,
+    sync::atomic::Ordering,
+};
 
 use chrono::{DateTime, Local};
 pub use datalith_image::*;
 pub use datalith_image_errors::*;
 use educe::Educe;
 use image_convert::{
-    compute_output_size, fetch_magic_wand, identify_ping, to_jpg, to_png, to_webp, Crop,
-    ImageResource, JPGConfig, MagickError, PNGConfig, WEBPConfig,
+    Crop, ImageResource, JPGConfig, MagickError, PNGConfig, WEBPConfig, compute_output_size,
+    fetch_magic_wand, identify_ping, to_jpg, to_png, to_webp,
 };
 use mime::Mime;
 use once_cell::sync::Lazy;
-use rdb_pagination::{prelude::*, Pagination, PaginationOptions, SqlJoin, SqlOrderByComponent};
+use rdb_pagination::{Pagination, PaginationOptions, SqlJoin, SqlOrderByComponent, prelude::*};
 use regex::Regex;
 use tokio::{io::AsyncRead, task, task::JoinSet};
 use uuid::Uuid;
 
 use crate::{
+    Datalith, DatalithFile, DatalithReadError, DatalithResource, FileTypeLevel,
     datalith::get_file_size_by_reader_and_copy_to_file,
     functions::get_file_name,
     guard::{DeleteGuard, TemporaryFileGuard},
-    image::sync::ReadOnlyImageResource,
-    Datalith, DatalithFile, DatalithReadError, DatalithResource, FileTypeLevel,
 };
 
 pub static MIME_WEBP: Lazy<Mime> = Lazy::new(|| Mime::from_str("image/webp").unwrap());
 
-/// A struct that defines the ordering options for querying images.
+/// Sort options for image queries.
 #[derive(Debug, Clone, Educe, OrderByOptions)]
 #[educe(Default)]
 #[orderByOptions(name = images)]
@@ -42,7 +45,7 @@ pub struct DatalithImageOrderBy {
     pub created_at: OrderMethod,
 }
 
-/// The width-to-height ratio which this image should be. The image will be center cropped to fit the condition.
+/// The width-to-height ratio for a center crop.
 #[derive(Debug, Clone)]
 pub struct CenterCrop(f64, f64);
 
@@ -51,7 +54,7 @@ impl CenterCrop {
     pub fn new(w: f64, h: f64) -> Option<Self> {
         let r = w / h;
 
-        if r.is_nan() || r.is_infinite() || r == 0f64 {
+        if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 || !r.is_finite() || r == 0.0 {
             None
         } else {
             Some(Self(w, h))
@@ -67,13 +70,13 @@ impl From<CenterCrop> for Crop {
 }
 
 impl Datalith {
-    /// Retrieve the maximum resolution (in pixels) for each of the uploaded images.
+    /// Get the maximum pixel count for an uploaded image.
     #[inline]
     pub fn get_max_image_resolution(&self) -> u32 {
         self.0._max_image_resolution.load(Ordering::Relaxed)
     }
 
-    /// Set the maximum resolution (in pixels) for each of the uploaded images.
+    /// Set the maximum pixel count for an uploaded image.
     ///
     /// The minimum resolution is **1**.
     #[inline]
@@ -85,13 +88,13 @@ impl Datalith {
         self.0._max_image_resolution.swap(resolution, Ordering::Relaxed);
     }
 
-    /// Retrieve the maximum image resolution multiplier for each of the uploaded images.
+    /// Get the maximum size multiplier for uploaded images.
     #[inline]
     pub fn get_max_image_resolution_multiplier(&self) -> u8 {
         self.0._max_image_resolution_multiplier.load(Ordering::Relaxed)
     }
 
-    /// Set the maximum image resolution multiplier for each of the uploaded images.
+    /// Set the maximum size multiplier for uploaded images.
     ///
     /// The minimum resolution multiplier is **1**.
     #[inline]
@@ -106,7 +109,7 @@ impl Datalith {
 
 // Upload
 impl Datalith {
-    /// Input an image into Datalith using a buffer.
+    /// Store an image from a buffer.
     pub async fn put_image_by_buffer(
         &self,
         buffer: impl Into<Vec<u8>>,
@@ -116,14 +119,14 @@ impl Datalith {
         center_crop: Option<CenterCrop>,
         save_original_file: bool,
     ) -> Result<DatalithImage, DatalithImageWriteError> {
-        // create the input image resource
-        let input = ReadOnlyImageResource::from(ImageResource::Data(buffer.into()));
+        // Create the input image.
+        let input = ImageResource::Data(buffer.into());
 
-        // read the image metadata
-        let (input_width, input_height, file_type, has_alpha_channel) =
-            self.read_image_metadata(input.clone()).await?;
+        // Read the image metadata.
+        let (input, input_width, input_height, file_type, has_alpha_channel) =
+            self.read_image_metadata(input).await?;
 
-        // save the original file if needed
+        // Save the original file if requested.
         let (created_at, file_name, original_file) = if save_original_file {
             let original_file = self
                 .put_file_by_buffer(
@@ -155,7 +158,7 @@ impl Datalith {
         .await
     }
 
-    /// Input an image into Datalith using a path.
+    /// Store an image from a path.
     pub async fn put_image_by_path(
         &self,
         file_path: impl AsRef<Path>,
@@ -171,16 +174,16 @@ impl Datalith {
             None => {
                 return Err(DatalithImageWriteError::MagickError(MagickError(String::from(
                     "unsupported path encoding",
-                ))))
+                ))));
             },
         };
 
-        // create the input image resource
-        let input = ReadOnlyImageResource::from(ImageResource::Path(file_path_string));
+        // Create the input image.
+        let input = ImageResource::Path(file_path_string);
 
-        // read the image metadata
-        let (input_width, input_height, file_type, has_alpha_channel) =
-            self.read_image_metadata(input.clone()).await?;
+        // Read the image metadata.
+        let (input, input_width, input_height, file_type, has_alpha_channel) =
+            self.read_image_metadata(input).await?;
 
         fn generate_file_name(
             file_name: Option<String>,
@@ -240,7 +243,7 @@ impl Datalith {
         .await
     }
 
-    /// Input an image into Datalith using a reader.
+    /// Store an image from a reader.
     #[allow(clippy::too_many_arguments)]
     #[inline]
     pub async fn put_image_by_reader(
@@ -336,9 +339,9 @@ impl Datalith {
     #[allow(clippy::too_many_arguments)]
     async fn put_image(
         &self,
-        input: ReadOnlyImageResource,
-        input_width: u16,
-        input_height: u16,
+        input: ImageResource,
+        _input_width: u16,
+        _input_height: u16,
         has_alpha_channel: bool,
         created_at: DateTime<Local>,
         file_name: String,
@@ -361,41 +364,27 @@ impl Datalith {
 
         let center_crop = center_crop.map(|e| e.into());
 
-        // reload the image if it needs to be cropped
-        let (input, input_width, input_height) = if let Some(center_crop) = center_crop {
-            let config = PNGConfig {
-                crop: Some(center_crop),
+        let prepared = task::spawn_blocking(move || {
+            let config = WEBPConfig {
+                crop: center_crop,
                 respect_orientation: true,
-                ..PNGConfig::default()
+                ..WEBPConfig::default()
             };
-
-            match fetch_magic_wand(&input, &config) {
-                Ok((wand, _)) => {
-                    let input = ReadOnlyImageResource::from(ImageResource::MagickWand(wand));
-                    let input_task = input.clone();
-
-                    let ident = match task::spawn_blocking(move || identify_ping(&input_task))
-                        .await
-                        .unwrap()
-                    {
-                        Ok(ident) => ident,
-                        Err(error) => {
-                            recover_original_file!();
-
-                            return Err(error.into());
-                        },
-                    };
-
-                    (input, ident.resolution.width as u16, ident.resolution.height as u16)
-                },
-                Err(error) => {
-                    recover_original_file!();
-
-                    return Err(error.into());
-                },
-            }
-        } else {
-            (input, input_width, input_height)
+            let (wand, _) = fetch_magic_wand(&input, &config)?;
+            let width = u16::try_from(wand.get_image_width())
+                .map_err(|_| MagickError("The image width is too large.".into()))?;
+            let height = u16::try_from(wand.get_image_height())
+                .map_err(|_| MagickError("The image height is too large.".into()))?;
+            Ok((ImageResource::MagickWand(wand), width, height)) as Result<_, MagickError>
+        })
+        .await
+        .map_err(|error| MagickError(error.to_string()))?;
+        let (mut input, input_width, input_height) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                recover_original_file!();
+                return Err(error.into());
+            },
         };
 
         let max_image_multiplier = self.get_max_image_resolution_multiplier() as usize;
@@ -436,12 +425,12 @@ impl Datalith {
 
         let (image_width, image_height) = match compute_output_size(
             true,
-            input_width,
-            input_height,
-            max_width.unwrap_or(0),
-            max_height.unwrap_or(0),
+            u32::from(input_width),
+            u32::from(input_height),
+            u32::from(max_width.unwrap_or(0)),
+            u32::from(max_height.unwrap_or(0)),
         ) {
-            Some(r) => r,
+            Some((width, height)) => (width as u16, height as u16),
             None => (input_width, input_height),
         };
 
@@ -473,26 +462,27 @@ impl Datalith {
 
             let file = {
                 let output = {
-                    let input = input.clone();
+                    let (returned_input, result) = task::spawn_blocking(move || {
+                        let result = (|| {
+                            let mut output = ImageResource::Data(Vec::new());
 
-                    let result = task::spawn_blocking(move || {
-                        let mut output =
-                            ImageResource::with_capacity(width as usize * height as usize);
+                            let config = WEBPConfig {
+                                width: u32::from(width),
+                                height: u32::from(height),
+                                respect_orientation: true,
+                                quality: 80,
+                                ..WEBPConfig::default()
+                            };
 
-                        let config = WEBPConfig {
-                            width,
-                            height,
-                            respect_orientation: true,
-                            quality: 80,
-                            ..WEBPConfig::default()
-                        };
+                            to_webp(&mut output, &input, &config)?;
 
-                        to_webp(&mut output, &input, &config)?;
-
-                        Ok(output.into_vec().unwrap()) as Result<Vec<u8>, MagickError>
+                            Ok(output.into_vec().unwrap()) as Result<Vec<u8>, MagickError>
+                        })();
+                        (input, result)
                     })
                     .await
-                    .unwrap();
+                    .map_err(|error| MagickError(error.to_string()))?;
+                    input = returned_input;
 
                     match result {
                         Ok(result) => result,
@@ -527,48 +517,43 @@ impl Datalith {
 
             let fallback_file = {
                 let (output, ext, file_type) = {
-                    let input = input.clone();
+                    let (returned_input, result) = task::spawn_blocking(move || {
+                        let result = (|| {
+                            let mut output = ImageResource::Data(Vec::new());
+                            let (ext, file_type) = if has_alpha_channel {
+                                let config = PNGConfig {
+                                    width: u32::from(width),
+                                    height: u32::from(height),
+                                    respect_orientation: true,
+                                    ..PNGConfig::default()
+                                };
 
-                    let result = task::spawn_blocking(move || {
-                        let mut output = ImageResource::with_capacity(
-                            image_width as usize * image_height as usize,
-                        );
-                        let ext;
-                        let file_type;
+                                to_png(&mut output, &input, &config)?;
 
-                        if has_alpha_channel {
-                            let config = PNGConfig {
-                                width,
-                                height,
-                                respect_orientation: true,
-                                ..PNGConfig::default()
+                                ("png", mime::IMAGE_PNG)
+                            } else {
+                                let config = JPGConfig {
+                                    width: u32::from(width),
+                                    height: u32::from(height),
+                                    respect_orientation: true,
+                                    quality: Some(70),
+                                    force_to_chroma_quartered: true,
+                                    ..JPGConfig::default()
+                                };
+
+                                to_jpg(&mut output, &input, &config)?;
+
+                                ("jpg", mime::IMAGE_JPEG)
                             };
 
-                            to_png(&mut output, &input, &config)?;
-
-                            ext = "png";
-                            file_type = mime::IMAGE_PNG;
-                        } else {
-                            let config = JPGConfig {
-                                width,
-                                height,
-                                respect_orientation: true,
-                                quality: 70,
-                                force_to_chroma_quartered: true,
-                                ..JPGConfig::default()
-                            };
-
-                            to_jpg(&mut output, &input, &config)?;
-
-                            ext = "jpg";
-                            file_type = mime::IMAGE_JPEG;
-                        }
-
-                        Ok((output.into_vec().unwrap(), ext, file_type))
-                            as Result<(Vec<u8>, &'static str, Mime), MagickError>
+                            Ok((output.into_vec().unwrap(), ext, file_type))
+                                as Result<(Vec<u8>, &'static str, Mime), MagickError>
+                        })();
+                        (input, result)
                     })
                     .await
-                    .unwrap();
+                    .map_err(|error| MagickError(error.to_string()))?;
+                    input = returned_input;
 
                     match result {
                         Ok(result) => result,
@@ -632,7 +617,7 @@ impl Datalith {
 
         let id = Uuid::new_v4();
 
-        // insert into images
+        // Save the image metadata.
         {
             #[rustfmt::skip]
             let result = sqlx::query(
@@ -665,7 +650,7 @@ impl Datalith {
             debug_assert!(result.rows_affected() > 0);
         }
 
-        // insert into image_thumbnails
+        // Save the thumbnail references.
         {
             const VALUES_PATTERN_CONCAT: &str = ", (?, ?, ?, ?), (?, ?, ?, ?)";
 
@@ -682,7 +667,7 @@ impl Datalith {
                 sql.push_str(VALUES_PATTERN_CONCAT)
             }
 
-            let mut query = sqlx::query(&sql);
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
 
             for (index, (thumbnail, fallback_thumbnail)) in
                 thumbnails.iter().zip(fallback_thumbnails.iter()).enumerate()
@@ -739,14 +724,17 @@ impl Datalith {
 
     async fn read_image_metadata(
         &self,
-        input: ReadOnlyImageResource,
-    ) -> Result<(u16, u16, Mime, bool), DatalithImageWriteError> {
-        let ident = task::spawn_blocking(move || identify_ping(&input))
-            .await
-            .unwrap()
-            .map_err(|_| DatalithImageWriteError::UnsupportedImageType)?;
+        input: ImageResource,
+    ) -> Result<(ImageResource, u16, u16, Mime, bool), DatalithImageWriteError> {
+        let (input, result) = task::spawn_blocking(move || {
+            let result = identify_ping(&input);
+            (input, result)
+        })
+        .await
+        .map_err(|error| MagickError(error.to_string()))?;
+        let ident = result.map_err(|_| DatalithImageWriteError::UnsupportedImageType)?;
 
-        // check the image dimensions for width and height
+        // Check the image width and height.
         if ident.resolution.width > u16::MAX as u32 || ident.resolution.height > u16::MAX as u32 {
             return Err(DatalithImageWriteError::ResolutionTooBig);
         }
@@ -756,18 +744,24 @@ impl Datalith {
         let mime_type = format!("image/{}", ident.format.to_ascii_lowercase());
         let has_alpha_channel = ident.has_alpha_channel;
 
-        // check the image resolution
+        // Check the image pixel count.
         if input_width as u32 * input_height as u32 > self.get_max_image_resolution() {
             return Err(DatalithImageWriteError::ResolutionTooBig);
         }
 
-        Ok((input_width, input_height, Mime::from_str(&mime_type).unwrap(), has_alpha_channel))
+        Ok((
+            input,
+            input_width,
+            input_height,
+            Mime::from_str(&mime_type).unwrap(),
+            has_alpha_channel,
+        ))
     }
 }
 
 // Download
 impl Datalith {
-    /// Check whether the image exists or not.
+    /// Check whether the image exists.
     pub async fn check_image_exist(&self, id: impl Into<Uuid>) -> Result<bool, DatalithReadError> {
         #[rustfmt::skip]
         let row = sqlx::query(
@@ -787,7 +781,7 @@ impl Datalith {
         Ok(row.is_some())
     }
 
-    /// Retrieve the image metadata using an ID.
+    /// Get the image metadata using an ID.
     pub async fn get_image_by_id(
         &self,
         image_id: impl Into<Uuid>,
@@ -858,7 +852,7 @@ impl Datalith {
                 let mut fallback_thumbnails = Vec::with_capacity(max_image_resolution_multiplier);
 
                 for (thumbnail_id, fallback_thumbnail_id) in
-                    image_thumbnails_rows.chunks_exact(2).map(|e| (e[0].0, e[1].0))
+                    image_thumbnails_rows.as_chunks::<2>().0.iter().map(|e| (e[0].0, e[1].0))
                 {
                     let (thumbnail_result, fallback_thumbnail_result) = tokio::join!(
                         self.get_file_by_id(thumbnail_id),
@@ -952,7 +946,7 @@ impl Datalith {
                     "
                 );
 
-                let query = sqlx::query_as(&sql);
+                let query = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()));
 
                 query.fetch_all(&mut *tx).await?
             };
@@ -985,29 +979,36 @@ impl Datalith {
 
 // Delete
 impl Datalith {
-    /// Remove an image using an ID. The related `DatalithImage` instances should be dropped before calling this function.
+    /// Remove an image by ID.
+    /// Drop all related `DatalithImage` values before calling this function.
     pub async fn delete_image_by_id(&self, id: impl Into<Uuid>) -> Result<bool, DatalithReadError> {
         let id = id.into();
         let image = self.get_image_by_id(id).await?;
 
         if let Some(image) = image {
-            let mut file_ids = HashSet::with_capacity(image.thumbnails().len() * 2 + 1);
+            let mut references: HashMap<Uuid, u64> =
+                HashMap::with_capacity(image.thumbnails().len() * 2 + 1);
 
             for file in image.thumbnails().iter().chain(image.fallback_thumbnails()) {
-                file_ids.insert(file.id());
+                *references.entry(file.id()).or_default() += 1;
             }
 
             if let Some(original_file) = image.original_file() {
-                file_ids.insert(original_file.id());
+                *references.entry(original_file.id()).or_default() += 1;
             }
 
             drop(image);
 
+            let file_ids: HashSet<Uuid> = references.keys().copied().collect();
             let mut guards: Vec<DeleteGuard> = Vec::with_capacity(file_ids.len());
             DeleteGuard::acquire_multiple(&mut guards, self.clone(), &file_ids).await;
 
+            if !self.check_image_exist(id).await? {
+                return Ok(false);
+            }
+
             for guard in guards.iter() {
-                self.wait_for_opening_files(guard).await?;
+                self.wait_for_opening_file_references(guard, references[&guard.id]).await?;
             }
 
             let mut tx = self.0.db.begin().await?;
@@ -1042,20 +1043,17 @@ impl Datalith {
                 return Ok(false);
             }
 
-            tx.commit().await?;
-
-            // delete related files
-
-            let mut tasks = JoinSet::new();
-
-            for (file_id, guard) in file_ids.into_iter().zip(guards) {
-                let datalith = self.clone();
-
-                tasks.spawn(async move { datalith.delete_file_by_id_inner(file_id, guard).await });
+            let mut removed = Vec::new();
+            for (file_id, count) in references {
+                if Self::release_file_references_in_transaction(&mut tx, file_id, count).await? {
+                    removed.push(file_id);
+                }
             }
 
-            while let Some(result) = tasks.join_next().await {
-                result.unwrap()?;
+            tx.commit().await?;
+
+            for file_id in removed {
+                self.remove_untracked_file(file_id).await?;
             }
 
             Ok(true)

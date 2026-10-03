@@ -12,7 +12,7 @@ use chrono::{DateTime, TimeZone};
 use mime::Mime;
 #[cfg(feature = "magic")]
 use once_cell::sync::Lazy;
-use rand::TryRngCore;
+use rand::TryRng;
 use sha2::{Digest, Sha256};
 #[cfg(feature = "magic")]
 use tokio::task;
@@ -111,11 +111,11 @@ pub(crate) fn get_file_name<Tz: TimeZone>(
             date_time.timestamp_millis().to_string()
         }
     } else {
-        if Path::new(file_name.as_str()).extension().is_none() {
-            if let Some(ext) = ext {
-                file_name.push('.');
-                file_name.push_str(ext);
-            }
+        if Path::new(file_name.as_str()).extension().is_none()
+            && let Some(ext) = ext
+        {
+            file_name.push('.');
+            file_name.push_str(ext);
         }
 
         file_name
@@ -143,9 +143,9 @@ fn get_mime_extension(mime_type: &Mime) -> Option<&'static str> {
 }
 
 #[cfg(feature = "image-convert")]
-/// Get an image extension for a given Mime.
+/// Get an image file extension from its MIME type.
 ///
-/// This function allows you to generate a file name based on `image_stem` and `file_type`.
+/// Use this extension with `image_stem` to build a file name.
 #[inline]
 pub fn get_image_extension(mime_type: &Mime) -> Option<&'static str> {
     match mime_type.subtype() {
@@ -194,7 +194,7 @@ pub(crate) fn get_hash_by_buffer(buffer: impl AsRef<[u8]>) -> [u8; 32] {
 
 #[inline]
 pub(crate) fn get_random_hash() -> [u8; 32] {
-    let mut rng = rand::rngs::OsRng;
+    let mut rng = rand::rngs::SysRng;
     let mut data = [0u8; 32];
 
     rng.try_fill_bytes(&mut data).unwrap();

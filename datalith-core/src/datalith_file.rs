@@ -15,33 +15,33 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::{guard::OpenGuard, Datalith};
+use crate::{Datalith, guard::OpenGuard};
 
-/// A struct that represents a file.
+/// A stored file and its metadata.
 #[derive(Debug, Educe)]
 #[educe(PartialEq, Eq, Hash)]
 pub struct DatalithFile {
-    #[educe(Eq(ignore), Hash(ignore))]
+    #[educe(PartialEq(ignore), Hash(ignore))]
     _datalith:    Datalith,
-    #[educe(Eq(ignore), Hash(ignore))]
+    #[educe(PartialEq(ignore), Hash(ignore))]
     _guard:       OpenGuard,
     id:           Uuid,
-    #[educe(Eq(ignore), Hash(ignore))]
+    #[educe(PartialEq(ignore), Hash(ignore))]
     created_at:   DateTime<Local>,
-    #[educe(Eq(ignore), Hash(ignore))]
+    #[educe(PartialEq(ignore), Hash(ignore))]
     file_size:    u64,
-    #[educe(Eq(ignore), Hash(ignore))]
+    #[educe(PartialEq(ignore), Hash(ignore))]
     file_type:    Mime,
-    #[educe(Eq(ignore), Hash(ignore))]
+    #[educe(PartialEq(ignore), Hash(ignore))]
     file_name:    String,
-    #[educe(Eq(ignore), Hash(ignore))]
+    #[educe(PartialEq(ignore), Hash(ignore))]
     is_temporary: bool,
-    #[educe(Eq(ignore), Hash(ignore))]
+    #[educe(PartialEq(ignore), Hash(ignore))]
     is_new:       bool,
 }
 
 impl DatalithFile {
-    /// Create a file instance.
+    /// Create a file value.
     #[allow(clippy::too_many_arguments)]
     #[inline]
     pub(crate) fn new<Tz: TimeZone>(
@@ -73,31 +73,31 @@ where {
 }
 
 impl DatalithFile {
-    /// Retrieve the file ID (UUID).
+    /// Get the file ID (UUID).
     #[inline]
     pub const fn id(&self) -> Uuid {
         self.id
     }
 
-    /// Retrieve the creation time.
+    /// Get the creation time.
     #[inline]
     pub const fn created_at(&self) -> DateTime<Local> {
         self.created_at
     }
 
-    /// Retrieve the file type (MIME).
+    /// Get the file type (MIME).
     #[inline]
     pub const fn file_type(&self) -> &Mime {
         &self.file_type
     }
 
-    /// Retrieve the file size (in bytes).
+    /// Get the file size (in bytes).
     #[inline]
     pub const fn file_size(&self) -> u64 {
         self.file_size
     }
 
-    /// Retrieve the file name.
+    /// Get the file name.
     #[inline]
     pub const fn file_name(&self) -> &String {
         &self.file_name
@@ -117,9 +117,9 @@ impl DatalithFile {
 }
 
 impl DatalithFile {
-    /// Create an reader.
+    /// Create a reader that borrows this file.
     #[inline]
-    pub async fn create_reader(&self) -> io::Result<DatalithFileReader> {
+    pub async fn create_reader(&self) -> io::Result<DatalithFileReader<'_>> {
         let file_path = self._datalith.get_file_path(self.id).await?;
 
         let file = File::open(file_path).await?;
@@ -130,7 +130,7 @@ impl DatalithFile {
         })
     }
 
-    /// Create a readable .
+    /// Move this file into a reader.
     #[inline]
     pub async fn into_readable(self) -> io::Result<ReadableDatalithFile> {
         let file_path = self._datalith.get_file_path(self.id).await?;
@@ -144,7 +144,7 @@ impl DatalithFile {
     }
 }
 
-/// A struct that provides an asynchronous read interface for files.
+/// An async reader that borrows a stored file.
 #[derive(Debug)]
 pub struct DatalithFileReader<'a> {
     _file: &'a DatalithFile,
@@ -162,7 +162,7 @@ impl AsyncRead for DatalithFileReader<'_> {
     }
 }
 
-/// A struct that represents a file and provides an asynchronous read interface for files.
+/// An async reader that owns a stored file.
 #[derive(Debug)]
 pub struct ReadableDatalithFile {
     _file: DatalithFile,
