@@ -121,12 +121,25 @@ async fn restart_recovers_work_without_duplicate_results() {
     service.close().await.unwrap();
     drop(service);
 
-    let service = DatalithService::new(
-        Datalith::new(directory.path()).await.unwrap(),
-        ServiceConfig::default(),
+    let pool = SqlitePool::connect_with(
+        SqliteConnectOptions::new().filename(directory.path().join(PATH_DB_FILE)),
     )
     .await
     .unwrap();
+    let work: String = sqlx::query_scalar("SELECT work FROM tasks WHERE id=?")
+        .bind(running)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let frozen: serde_json::Value = serde_json::from_str(&work).unwrap();
+    assert_eq!(12_000_000, frozen["Upload"]["recipe"]["video_bitrate"]);
+    assert_eq!(1, frozen["Upload"]["recipe"]["version"]);
+    pool.close().await;
+
+    let mut config = ServiceConfig::default();
+    config.av.bitrate = 24_000_000;
+    let service =
+        DatalithService::new(Datalith::new(directory.path()).await.unwrap(), config).await.unwrap();
     let repeated = service
         .submit_upload(CONTENT, UploadOptions::default(), Some("running-upload".into()))
         .await
@@ -135,6 +148,18 @@ async fn restart_recovers_work_without_duplicate_results() {
     assert_eq!(TaskStatus::Succeeded, repeated.status);
     assert_eq!(2, repeated.attempt);
     assert_eq!("3", service.list_media(1, 100).await.unwrap().total);
+    let pool = SqlitePool::connect_with(
+        SqliteConnectOptions::new().filename(directory.path().join(PATH_DB_FILE)),
+    )
+    .await
+    .unwrap();
+    let work: String = sqlx::query_scalar("SELECT work FROM tasks WHERE id=?")
+        .bind(running)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(frozen, serde_json::from_str::<serde_json::Value>(&work).unwrap());
+    pool.close().await;
     let different = service
         .submit_upload(
             &b"different content"[..],

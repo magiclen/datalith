@@ -70,6 +70,11 @@ impl DatalithService {
             || config.workers > 64
             || config.max_file_size == 0
             || config.task_retention_seconds == 0
+            || config.av.bitrate == 0
+            || config.av.max_processes == 0
+            || config.av.encoder_threads == 0
+            || config.playback_session_seconds == 0
+            || config.mp4_export_retention_seconds == 0
         {
             return Err(ServiceError::Invalid("invalid service limits".into()));
         }
@@ -127,7 +132,7 @@ impl DatalithService {
             "task_retention_seconds": self.0.config.task_retention_seconds,
             "task_notifications": ["polling"], "cancellation": "safe_points",
             "archive_version": 1, "export_pauses_writes": true,
-            "future_profiles": {"audio": ["m4a:aac-lc", "mp3:lame"], "video": ["mp4:h264-x264+aac-lc"]}
+            "future_profiles": {"audio": ["m4a:aac-lc", "flac"], "video": ["hls:h264-x264+aac-lc"]}
         })
     }
 

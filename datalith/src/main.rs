@@ -61,11 +61,11 @@ fn main() -> anyhow::Result<()> {
         let datalith = Datalith::new(&args.environment).await?;
         datalith.set_temporary_file_lifespan(args.temporary_file_lifespan);
         let config = ServiceConfig {
-            max_file_size:                                       args.max_file_size.as_u64(),
-            workers:                                             usize::from(args.workers),
-            task_retention_seconds:                              args.task_retention_seconds,
+            max_file_size: args.max_file_size.as_u64(),
+            workers: usize::from(args.workers),
+            task_retention_seconds: args.task_retention_seconds,
             #[cfg(feature = "image-convert")]
-            image_limits:                                        datalith_core::ImageLimits {
+            image_limits: datalith_core::ImageLimits {
                 max_pixels:       u64::from(args.max_image_resolution),
                 max_frames:       args.max_image_frames,
                 max_total_pixels: args.max_image_total_pixels,
@@ -73,7 +73,8 @@ fn main() -> anyhow::Result<()> {
                 max_multiplier:   args.max_image_resolution_multiplier,
             },
             #[cfg(not(feature = "image-convert"))]
-            image_limits:                                        Default::default(),
+            image_limits: Default::default(),
+            ..ServiceConfig::default()
         };
         let service = DatalithService::new(datalith, config).await?;
         let result: anyhow::Result<()> = match args.command.unwrap_or(Command::Serve) {

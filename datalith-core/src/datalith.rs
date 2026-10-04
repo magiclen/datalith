@@ -51,7 +51,7 @@ pub const PATH_TEMPORARY_FILE_DIRECTORY: &str = "datalith.temp";
 /// The directory name for stored file contents.
 pub const PATH_FILE_DIRECTORY: &str = "datalith.files";
 
-const DATABASE_VERSION: u32 = 2;
+const DATABASE_VERSION: u32 = 3;
 const MAX_DATABASE_CONNECTIONS: u32 = 4;
 
 const TEMPORARY_FILE_LIFESPAN: Duration = Duration::from_secs(60);

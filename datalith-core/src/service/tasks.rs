@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use super::{
     DatalithService, ExportOptions, Media, MediaFile, MediaKind, PreparedFile, ProcessOptions,
-    ServiceError, StagedInput, Task, TaskError, TaskStatus, UploadOptions, Work,
+    ProcessingRecipe, ServiceError, StagedInput, Task, TaskError, TaskStatus, UploadOptions, Work,
     store::sync_directory,
 };
 #[cfg(feature = "image-convert")]
@@ -57,6 +57,7 @@ impl DatalithService {
             id,
             Work::Upload {
                 options,
+                recipe: Some(ProcessingRecipe::from_config(&self.0.config)),
                 input,
             },
             idempotency_key,
@@ -100,7 +101,7 @@ impl DatalithService {
         self.enqueue(id, Work::Export(options), idempotency_key, directory).await
     }
 
-    /// Queue the creation of new image variants from existing media.
+    /// Queue processing of the retained original into a new media item.
     pub async fn submit_process(
         &self,
         id: Uuid,
@@ -114,9 +115,16 @@ impl DatalithService {
         {
             return Ok(task);
         }
+        if options.kind == MediaKind::Resource {
+            return Err(ServiceError::Invalid(
+                "reprocessing requires image, audio, or video options".into(),
+            ));
+        }
         self.validate_upload(&UploadOptions {
-            kind: MediaKind::Image,
+            kind: options.kind,
             image: options.image.clone(),
+            audio: options.audio.clone(),
+            video: options.video.clone(),
             ..UploadOptions::default()
         })?;
         let source = self.get_media(id).await?.ok_or(ServiceError::NotFound)?;
@@ -141,6 +149,7 @@ impl DatalithService {
             Work::Process {
                 source: id,
                 options,
+                recipe: Some(ProcessingRecipe::from_config(&self.0.config)),
                 input,
                 file_name,
                 expires_at: source.expires_at,
@@ -172,6 +181,11 @@ impl DatalithService {
                 .map_err(|_| ServiceError::Invalid("invalid MIME type".into()))?;
         }
         if options.kind == MediaKind::Image {
+            if options.image.processing_mode == super::ProcessingMode::Trust {
+                return Err(ServiceError::Unsupported(
+                    "image trust processing is not available".into(),
+                ));
+            }
             #[cfg(feature = "image-convert")]
             super::image_processor::validate_options(&options.image, &self.0.config.image_limits)?;
             #[cfg(not(feature = "image-convert"))]
@@ -472,16 +486,34 @@ impl DatalithService {
             return Ok(None);
         };
         let mut task: Task = serde_json::from_str(row.try_get("metadata")?)?;
-        let work: Work = serde_json::from_str(row.try_get("work")?)?;
+        let mut work: Work = serde_json::from_str(row.try_get("work")?)?;
+        // Freeze legacy recipes before the first attempt with this service version.
+        match &mut work {
+            Work::Upload {
+                recipe, ..
+            }
+            | Work::Process {
+                recipe, ..
+            } => {
+                if recipe.is_none() {
+                    *recipe = Some(ProcessingRecipe::from_config(&self.0.config));
+                }
+            },
+            Work::Import {
+                ..
+            }
+            | Work::Export(_) => (),
+        }
         task.status = TaskStatus::Running;
         task.stage = if task.kind == "image" { "processing" } else { "storing" }.into();
         task.attempt = task.attempt.saturating_add(1);
         task.updated_at = Utc::now();
         task.total_units = Some(1);
         let cancel = Arc::new(AtomicBool::new(false));
-        sqlx::query("UPDATE tasks SET status='running',updated_at=?,metadata=? WHERE id=?")
+        sqlx::query("UPDATE tasks SET status='running',updated_at=?,metadata=?,work=? WHERE id=?")
             .bind(task.updated_at.timestamp_millis())
             .bind(serde_json::to_string(&task)?)
+            .bind(serde_json::to_string(&work)?)
             .bind(task.id)
             .execute(&mut *tx)
             .await?;
@@ -509,10 +541,23 @@ impl DatalithService {
                     let result = match work {
                         Work::Upload {
                             options,
+                            recipe,
                             input,
-                        } => service.run_upload(id, options, None, input, cancel.clone()).await,
+                        } => {
+                            service
+                                .run_upload(
+                                    id,
+                                    options,
+                                    recipe.unwrap(),
+                                    None,
+                                    input,
+                                    cancel.clone(),
+                                )
+                                .await
+                        },
                         Work::Process {
                             options,
+                            recipe,
                             file_name,
                             expires_at,
                             input,
@@ -522,11 +567,14 @@ impl DatalithService {
                                 .run_upload(
                                     id,
                                     UploadOptions {
-                                        kind: MediaKind::Image,
+                                        kind: options.kind,
                                         file_name: Some(file_name),
                                         image: options.image,
+                                        audio: options.audio,
+                                        video: options.video,
                                         ..UploadOptions::default()
                                     },
+                                    recipe.unwrap(),
                                     expires_at,
                                     input,
                                     cancel.clone(),
@@ -706,10 +754,13 @@ impl DatalithService {
         &self,
         id: Uuid,
         options: UploadOptions,
+        recipe: ProcessingRecipe,
         source_expiry: Option<chrono::DateTime<Utc>>,
         staged: StagedInput,
         cancel: Arc<AtomicBool>,
     ) -> Result<serde_json::Value, ServiceError> {
+        #[cfg(not(feature = "image-convert"))]
+        let _ = &recipe;
         let input = self.work_directory(id).join("input");
         let output = self.work_directory(id).join("output");
         if fs::try_exists(&output).await? {
@@ -729,6 +780,9 @@ impl DatalithService {
             file_name: name.clone(),
             original: None,
             variants: Vec::new(),
+            audio: None,
+            video: None,
+            warnings: Vec::new(),
             expires_at: None,
             single_use: options.retention.single_use,
             consumed_at: None,
@@ -743,7 +797,7 @@ impl DatalithService {
             {
                 let image_input = input.clone();
                 let image_options = options.image.clone();
-                let limits = self.0.config.image_limits.clone();
+                let limits = recipe.image_limits.clone();
                 let image_cancel = cancel.clone();
                 let image = tokio::task::spawn_blocking(move || {
                     super::image_processor::process_image(
@@ -775,20 +829,21 @@ impl DatalithService {
                     )
                     .await?;
                     media.variants.push(Variant {
-                        name:         variant.spec.name.clone(),
-                        multiplier:   variant.multiplier,
-                        format:       variant.format.clone(),
-                        width:        variant.width,
-                        height:       variant.height,
-                        animated:     variant.animated,
-                        file:         file.metadata.clone(),
-                        content_path: content_path(
+                        processing_method: super::ProcessingMethod::Transcoded,
+                        name:              variant.spec.name.clone(),
+                        multiplier:        variant.multiplier,
+                        format:            variant.format.clone(),
+                        width:             variant.width,
+                        height:            variant.height,
+                        animated:          variant.animated,
+                        file:              file.metadata.clone(),
+                        content_path:      content_path(
                             id,
                             &variant.spec.name,
                             variant.multiplier,
                             &variant.format,
                         ),
-                        recipe:       Some(variant.spec),
+                        recipe:            Some(variant.spec),
                     });
                     prepared.insert(file.metadata.id, file);
                 }
@@ -838,7 +893,7 @@ impl DatalithService {
         }
         let mut guards = Vec::new();
         let mut tx = self.0.datalith.0.db.begin_with("BEGIN IMMEDIATE").await?;
-        self.publish_media_tx(&mut tx, &mut media, &prepared, &mut guards).await?;
+        self.publish_media_tx(&mut tx, &mut media, None, &prepared, &mut guards).await?;
         let result = serde_json::to_value(&media)?;
         Self::complete_task_tx(&mut tx, id, &result).await?;
         tx.commit().await?;
@@ -876,6 +931,7 @@ fn request_fingerprint(work: &Work) -> Result<String, ServiceError> {
     // The saved input size is a storage detail, so old and new requests use the same identity.
     if let Some(serde_json::Value::Object(upload)) = request.get_mut("Upload") {
         upload.remove("file_size");
+        upload.remove("recipe");
     }
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(&request)?)))
 }
@@ -888,5 +944,44 @@ fn status_name(status: TaskStatus) -> &'static str {
         TaskStatus::Succeeded => "succeeded",
         TaskStatus::Failed => "failed",
         TaskStatus::Cancelled => "cancelled",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_request_identity_ignores_default_additions_and_recipe_snapshots() {
+        let options = serde_json::json!({
+            "kind": "resource", "file_name": null, "file_type": null,
+            "retention": {"expires_in_seconds": null, "single_use": false},
+            "image": {"save_original": true, "variants": [{
+                "name": "default", "max_width": null, "max_height": null,
+                "crop": null, "multipliers": [1, 2, 3]
+            }]}
+        });
+        let legacy = serde_json::json!({"Upload": {"options": options.clone(), "hash": "abc"}});
+        let expected = hex::encode(Sha256::digest(serde_json::to_vec(&legacy).unwrap()));
+        let mut work: Work = serde_json::from_value(legacy).unwrap();
+        assert_eq!(expected, request_fingerprint(&work).unwrap());
+        if let Work::Upload {
+            recipe,
+            input,
+            ..
+        } = &mut work
+        {
+            *recipe = Some(ProcessingRecipe::from_config(&super::super::ServiceConfig::default()));
+            input.file_size = Some(3);
+        }
+        assert_eq!(expected, request_fingerprint(&work).unwrap());
+
+        let source = Uuid::new_v4();
+        let process = serde_json::json!({"Process": {"source": source, "options": {"image": options["image"]}}});
+        let expected = hex::encode(Sha256::digest(serde_json::to_vec(&process).unwrap()));
+        assert_eq!(expected, process_fingerprint(source, &ProcessOptions::default()).unwrap());
+        let mut changed = ProcessOptions::default();
+        changed.image.processing_mode = super::super::ProcessingMode::Trust;
+        assert_ne!(expected, process_fingerprint(source, &changed).unwrap());
     }
 }

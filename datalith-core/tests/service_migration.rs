@@ -263,3 +263,99 @@ async fn migrate_legacy_ids_images_aliases_and_reference_counts() {
     );
     service.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn migrate_ready_version_two_without_rebuilding_media() {
+    let directory = TempDir::new().unwrap();
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    let task = service.submit_upload(STANDALONE, Default::default(), None).await.unwrap();
+    let media: datalith_core::Media = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let task = service.get_task(task.id).await.unwrap().unwrap();
+            if task.status.is_terminal() {
+                assert_eq!(datalith_core::TaskStatus::Succeeded, task.status);
+                break serde_json::from_value(task.result.unwrap()).unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    service.close().await.unwrap();
+    drop(service);
+    let pool = SqlitePool::connect_with(
+        SqliteConnectOptions::new().filename(directory.path().join(PATH_DB_FILE)),
+    )
+    .await
+    .unwrap();
+    sqlx::raw_sql(
+        "DROP TABLE media_hls; UPDATE sys_db_information SET value='2' WHERE key IN \
+         ('version','media_migration')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    let migrated = service.get_media(media.id).await.unwrap().unwrap();
+    assert_eq!(media.original, migrated.original);
+    assert_eq!(media.created_at, migrated.created_at);
+    assert_eq!("1", service.list_media(1, 100).await.unwrap().total);
+    let backup_path = directory.path().join(format!("{PATH_DB_FILE}.v2.bak"));
+    let backup = SqlitePool::connect_with(
+        SqliteConnectOptions::new().filename(&backup_path).read_only(true),
+    )
+    .await
+    .unwrap();
+    let version: String =
+        sqlx::query_scalar("SELECT value FROM sys_db_information WHERE key='version'")
+            .fetch_one(&backup)
+            .await
+            .unwrap();
+    assert_eq!("2", version);
+    let tables: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name='media_hls'")
+            .fetch_one(&backup)
+            .await
+            .unwrap();
+    assert_eq!(0, tables);
+    backup.close().await;
+    let before = fs::read(&backup_path).await.unwrap();
+    service.close().await.unwrap();
+    drop(service);
+
+    let datalith = Datalith::new(directory.path()).await.unwrap();
+    let pool = SqlitePool::connect_with(
+        SqliteConnectOptions::new().filename(directory.path().join(PATH_DB_FILE)),
+    )
+    .await
+    .unwrap();
+    let version: String =
+        sqlx::query_scalar("SELECT value FROM sys_db_information WHERE key='version'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!("3", version);
+    let ready: String =
+        sqlx::query_scalar("SELECT value FROM sys_db_information WHERE key='media_migration'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!("3", ready);
+    let violations = sqlx::query("PRAGMA foreign_key_check").fetch_all(&pool).await.unwrap();
+    assert!(violations.is_empty());
+    pool.close().await;
+    assert_eq!(before, fs::read(backup_path).await.unwrap());
+    datalith.close().await;
+}

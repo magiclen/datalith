@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{Pool, Row, Sqlite};
 use uuid::Uuid;
 
-use super::{Media, MediaFile, MediaKind, ServiceError, Variant};
+use super::{HlsInventory, Media, MediaFile, MediaKind, ServiceError, Variant, file_references};
 use crate::{DatalithCreateError, PATH_DB_FILE, PATH_FILE_DIRECTORY, functions::get_hash_by_path};
 
 pub(crate) async fn upgrade(
@@ -30,31 +30,55 @@ async fn upgrade_inner(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), Se
         sqlx::query_scalar("SELECT value FROM sys_db_information WHERE key = 'media_migration'")
             .fetch_optional(pool)
             .await?;
-    if ready.as_deref() == Some("2") {
-        // Add new indexes to databases created by earlier versions.
+    if version == "3" && ready.as_deref() == Some("3") {
         sqlx::raw_sql(include_str!("../sql/service.sql")).execute(pool).await?;
-
+        sqlx::raw_sql(include_str!("../sql/media-v3.sql")).execute(pool).await?;
         return Ok(());
     }
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM files").fetch_one(pool).await?;
-    if version == "1" && count > 0 {
-        let backup = environment.join(format!("{PATH_DB_FILE}.v1.bak"));
-        if !tokio::fs::try_exists(&backup).await? {
-            let pending = environment.join(format!("{PATH_DB_FILE}.v1.bak.pending"));
-            match tokio::fs::remove_file(&pending).await {
-                Ok(()) => (),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => (),
-                Err(error) => return Err(error.into()),
-            }
-            sqlx::query("VACUUM INTO ?")
-                .bind(pending.to_string_lossy().as_ref())
-                .execute(pool)
-                .await?;
-            tokio::fs::File::open(&pending).await?.sync_all().await?;
-            tokio::fs::rename(pending, &backup).await?;
-            super::store::sync_directory(environment).await?;
-        }
+    if version != "3" {
+        backup_database(pool, environment, &version).await?;
     }
+    if !matches!(ready.as_deref(), Some("2" | "3")) {
+        upgrade_legacy(pool, environment).await?;
+    }
+    let mut tx = pool.begin().await?;
+    sqlx::raw_sql(include_str!("../sql/service.sql")).execute(&mut *tx).await?;
+    sqlx::raw_sql(include_str!("../sql/media-v3.sql")).execute(&mut *tx).await?;
+    sqlx::query("UPDATE sys_db_information SET value = '3' WHERE key = 'version'")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT OR REPLACE INTO sys_db_information(key,value) VALUES('media_migration','3')",
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn backup_database(
+    pool: &Pool<Sqlite>,
+    environment: &Path,
+    version: &str,
+) -> Result<(), ServiceError> {
+    let backup = environment.join(format!("{PATH_DB_FILE}.v{version}.bak"));
+    if tokio::fs::try_exists(&backup).await? {
+        return Ok(());
+    }
+    let pending = environment.join(format!("{PATH_DB_FILE}.v{version}.bak.pending"));
+    match tokio::fs::remove_file(&pending).await {
+        Ok(()) => (),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error.into()),
+    }
+    sqlx::query("VACUUM INTO ?").bind(pending.to_string_lossy().as_ref()).execute(pool).await?;
+    tokio::fs::File::open(&pending).await?.sync_all().await?;
+    tokio::fs::rename(pending, &backup).await?;
+    super::store::sync_directory(environment).await?;
+    Ok(())
+}
+
+async fn upgrade_legacy(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), ServiceError> {
     let rows = sqlx::query(
         "SELECT id, hash, created_at, file_size, file_type, file_name, expired_at FROM files \
          ORDER BY expired_at IS NOT NULL, id",
@@ -137,13 +161,16 @@ async fn upgrade_inner(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), Se
             file_name: file.file_name.clone(),
             original: Some(file),
             variants: Vec::new(),
+            audio: None,
+            video: None,
+            warnings: Vec::new(),
             expires_at: expires_at.map(timestamp).transpose()?,
             single_use: expires_at.is_some(),
             consumed_at: None,
             animated: false,
             frame_count: 1,
         };
-        insert_media(&mut tx, &media).await?;
+        insert_media(&mut tx, &media, None).await?;
     }
     for row in images {
         let id: Uuid = row.try_get("id")?;
@@ -163,6 +190,9 @@ async fn upgrade_inner(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), Se
                 })
                 .transpose()?,
             variants: Vec::new(),
+            audio: None,
+            video: None,
+            warnings: Vec::new(),
             expires_at: None,
             single_use: false,
             consumed_at: None,
@@ -185,6 +215,15 @@ async fn upgrade_inner(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), Se
                 .clone();
             let format = file.file_type.strip_prefix("image/").unwrap_or("bin").to_owned();
             media.variants.push(Variant {
+                processing_method: if media
+                    .original
+                    .as_ref()
+                    .is_some_and(|original| original.sha256 == file.sha256)
+                {
+                    super::ProcessingMethod::Copied
+                } else {
+                    super::ProcessingMethod::Unknown
+                },
                 name: "default".into(),
                 multiplier,
                 width: width * u32::from(multiplier),
@@ -196,7 +235,7 @@ async fn upgrade_inner(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), Se
                 recipe: None,
             });
         }
-        insert_media(&mut tx, &media).await?;
+        insert_media(&mut tx, &media, None).await?;
     }
     // Keep standalone files available under their original IDs.
     for row in &rows {
@@ -219,13 +258,16 @@ async fn upgrade_inner(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), Se
             file_name: file.file_name.clone(),
             original: Some(file),
             variants: Vec::new(),
+            audio: None,
+            video: None,
+            warnings: Vec::new(),
             expires_at: expires_at.map(timestamp).transpose()?,
             single_use: expires_at.is_some(),
             consumed_at: None,
             animated: false,
             frame_count: 1,
         };
-        insert_media(&mut tx, &media).await?;
+        insert_media(&mut tx, &media, None).await?;
     }
     sqlx::query("DELETE FROM image_thumbnails").execute(&mut *tx).await?;
     sqlx::query("DELETE FROM images").execute(&mut *tx).await?;
@@ -267,7 +309,9 @@ pub(super) fn content_path(id: Uuid, name: &str, multiplier: u8, format: &str) -
 pub(super) async fn insert_media(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     media: &Media,
+    inventory: Option<&HlsInventory>,
 ) -> Result<(), ServiceError> {
+    super::validate_assets(media, inventory)?;
     sqlx::query(
         "INSERT INTO media(id, kind, created_at, expires_at, single_use, consumed_at, metadata) \
          VALUES(?, ?, ?, ?, ?, ?, ?)",
@@ -286,17 +330,15 @@ pub(super) async fn insert_media(
     .bind(serde_json::to_string(media)?)
     .execute(&mut **tx)
     .await?;
-    if let Some(file) = &media.original {
-        insert_reference(tx, media.id, "original", file.id).await?;
+    for (role, file) in file_references(media, inventory) {
+        insert_reference(tx, media.id, &role, file.id).await?;
     }
-    for variant in &media.variants {
-        insert_reference(
-            tx,
-            media.id,
-            &format!("{}:{}:{}", variant.name, variant.multiplier, variant.format),
-            variant.file.id,
-        )
-        .await?;
+    if let Some(inventory) = inventory {
+        sqlx::query("INSERT INTO media_hls(media_id, inventory) VALUES(?, ?)")
+            .bind(media.id)
+            .bind(serde_json::to_string(inventory)?)
+            .execute(&mut **tx)
+            .await?;
     }
     Ok(())
 }

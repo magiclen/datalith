@@ -283,17 +283,17 @@ impl DatalithService {
         &self,
         tx: &mut Transaction<'_, Sqlite>,
         media: &mut Media,
+        inventory: Option<&mut super::HlsInventory>,
         prepared: &HashMap<Uuid, PreparedFile>,
         guards: &mut Vec<OpenGuard>,
     ) -> Result<(), ServiceError> {
-        if let Some(file) = &mut media.original {
-            self.register_file(tx, file, prepared, guards, file.id, false).await?;
+        super::validate_assets(media, inventory.as_deref())?;
+        let mut inventory = inventory;
+        for file in super::files_mut(media, inventory.as_deref_mut()) {
+            let source_id = file.id;
+            self.register_file(tx, file, prepared, guards, source_id, false).await?;
         }
-        for variant in &mut media.variants {
-            let source_id = variant.file.id;
-            self.register_file(tx, &mut variant.file, prepared, guards, source_id, false).await?;
-        }
-        insert_media(tx, media).await?;
+        insert_media(tx, media, inventory.as_deref()).await?;
         Ok(())
     }
 
@@ -301,15 +301,14 @@ impl DatalithService {
         &self,
         tx: &mut Transaction<'_, Sqlite>,
         media: &mut Media,
+        inventory: Option<&mut super::HlsInventory>,
         prepared: &HashMap<Uuid, PreparedFile>,
         guards: &mut Vec<OpenGuard>,
         ids: &mut HashMap<Uuid, Uuid>,
     ) -> Result<(), ServiceError> {
-        for file in media
-            .original
-            .iter_mut()
-            .chain(media.variants.iter_mut().map(|variant| &mut variant.file))
-        {
+        super::validate_assets(media, inventory.as_deref())?;
+        let mut inventory = inventory;
+        for file in super::files_mut(media, inventory.as_deref_mut()) {
             let source_id = file.id;
             if let Some(id) = ids.get(&source_id) {
                 file.id = *id;
@@ -317,7 +316,7 @@ impl DatalithService {
             self.register_file(tx, file, prepared, guards, source_id, true).await?;
             ids.insert(source_id, file.id);
         }
-        insert_media(tx, media).await?;
+        insert_media(tx, media, inventory.as_deref()).await?;
         Ok(())
     }
 
@@ -521,6 +520,134 @@ mod tests {
         drop(content);
         service.clear_released_files().await.unwrap();
         assert!(!fs::try_exists(path).await.unwrap());
+        service.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn hls_inventory_references_share_content_and_are_released_together() {
+        use sha2::{Digest, Sha256};
+
+        use super::super::{
+            HlsInventory, HlsSegment, HlsTrack, ProcessingMethod, Rational, VideoMedia,
+            VideoVariant,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let service = DatalithService::new(
+            Datalith::new(directory.path()).await.unwrap(),
+            ServiceConfig::default(),
+        )
+        .await
+        .unwrap();
+        let bytes = b"Shared HLS content for a storage lifecycle test.";
+        let path = directory.path().join("staged-fragment");
+        fs::write(&path, bytes).await.unwrap();
+        let file = MediaFile {
+            id:        Uuid::new_v4(),
+            sha256:    hex::encode(Sha256::digest(bytes)),
+            file_size: bytes.len().to_string(),
+            file_type: "video/mp4".into(),
+            file_name: "fragment.m4s".into(),
+        };
+        let mut prepared = HashMap::new();
+        prepared.insert(file.id, PreparedFile {
+            path,
+            metadata: file.clone(),
+        });
+        let mut media = Media {
+            id:          Uuid::new_v4(),
+            kind:        MediaKind::Video,
+            created_at:  Utc::now(),
+            file_name:   "video".into(),
+            original:    Some(file.clone()),
+            variants:    Vec::new(),
+            audio:       None,
+            video:       Some(VideoMedia {
+                duration_seconds: 12.0,
+                variants:         vec![VideoVariant {
+                    id:                "1080p30".into(),
+                    resolution:        1080,
+                    width:             1920,
+                    height:            1080,
+                    fps:               30,
+                    frame_rate:        Rational {
+                        numerator: 30, denominator: 1
+                    },
+                    codec:             "avc1.640028".into(),
+                    processing_method: ProcessingMethod::Remuxed,
+                    playlist_path:     String::new(),
+                    audio:             Vec::new(),
+                }],
+                audio:            Vec::new(),
+                master_path:      String::new(),
+            }),
+            warnings:    Vec::new(),
+            expires_at:  None,
+            single_use:  false,
+            consumed_at: None,
+            animated:    false,
+            frame_count: 1,
+        };
+        let mut inventory = HlsInventory {
+            tracks: vec![HlsTrack {
+                id:                "1080p30".into(),
+                initialization:    file.clone(),
+                segments:          (0..2)
+                    .map(|index| HlsSegment {
+                        file:        file.clone(),
+                        start:       index * 720_000,
+                        duration:    720_000,
+                        independent: true,
+                    })
+                    .collect(),
+                timescale:         120_000,
+                codec:             "avc1.640028".into(),
+                average_bandwidth: 1000,
+                peak_bandwidth:    1000,
+            }],
+        };
+        let mut guards = Vec::new();
+        let mut tx = service.0.datalith.0.db.begin().await.unwrap();
+        service
+            .publish_media_tx(&mut tx, &mut media, Some(&mut inventory), &prepared, &mut guards)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        drop(guards);
+        let references = super::super::file_references(&media, Some(&inventory));
+        assert_eq!(4, references.len());
+        assert!(references.iter().all(|(_, reference)| reference.id == file.id));
+        let count: i64 = sqlx::query_scalar("SELECT count FROM files WHERE id=?")
+            .bind(file.id)
+            .fetch_one(&service.0.datalith.0.db)
+            .await
+            .unwrap();
+        assert_eq!(4, count);
+        let metadata: String = sqlx::query_scalar("SELECT metadata FROM media WHERE id=?")
+            .bind(media.id)
+            .fetch_one(&service.0.datalith.0.db)
+            .await
+            .unwrap();
+        assert!(!metadata.contains("segments"));
+        let stored: String = sqlx::query_scalar("SELECT inventory FROM media_hls WHERE media_id=?")
+            .bind(media.id)
+            .fetch_one(&service.0.datalith.0.db)
+            .await
+            .unwrap();
+        assert_eq!(
+            2,
+            serde_json::from_str::<HlsInventory>(&stored).unwrap().tracks[0].segments.len()
+        );
+        let content_path = service.0.datalith.get_file_path(file.id).await.unwrap();
+        assert!(service.delete_media(media.id).await.unwrap());
+        service.clear_released_files().await.unwrap();
+        assert!(!fs::try_exists(content_path).await.unwrap());
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM media_hls WHERE media_id=?")
+            .bind(media.id)
+            .fetch_one(&service.0.datalith.0.db)
+            .await
+            .unwrap();
+        assert_eq!(0, count);
         service.close().await.unwrap();
     }
 }

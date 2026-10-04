@@ -264,6 +264,7 @@ impl DatalithService {
             self.publish_import_media_tx(
                 &mut tx,
                 &mut media,
+                None,
                 &prepared,
                 &mut guards,
                 &mut resolved_files,
@@ -291,7 +292,7 @@ impl DatalithService {
 }
 
 fn media_files(media: &Media) -> impl Iterator<Item = &MediaFile> {
-    media.original.iter().chain(media.variants.iter().map(|variant| &variant.file))
+    super::file_references(media, None).into_iter().map(|(_, file)| file)
 }
 
 fn check_cancelled(cancel: &AtomicBool) -> Result<(), ServiceError> {
@@ -531,6 +532,12 @@ fn validate_manifest(
     let mut referenced = HashSet::new();
     let mut file_ids = HashMap::<Uuid, (&str, u64)>::new();
     for media in &manifest.media {
+        if media.audio.is_some()
+            || media.video.is_some()
+            || matches!(media.kind, super::MediaKind::Audio | super::MediaKind::Video)
+        {
+            return Err(archive_error("version 1 archives cannot contain audio or video outputs"));
+        }
         if !ids.insert(media.id) {
             return Err(archive_error("duplicate media ID"));
         }
@@ -593,7 +600,7 @@ fn validate_manifest(
 fn equivalent_media(left: &Media, right: &Media) -> Result<bool, ServiceError> {
     fn normalized(media: &Media) -> Result<Value, ServiceError> {
         let mut media = media.clone();
-        if let Some(file) = &mut media.original {
+        for file in super::files_mut(&mut media, None) {
             file.id = Uuid::nil();
         }
         for variant in &mut media.variants {
