@@ -6,3 +6,10 @@
 !/*/src
 !/*/Cargo.toml
 !/*/Cargo.lock
+!/LICENSE
+
+!/.github/
+/.github/*
+!/.github/scripts/
+/.github/scripts/*
+!/.github/scripts/install-ffmpeg.sh

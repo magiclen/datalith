@@ -20,6 +20,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Prepare FFmpeg
+        id: ffmpeg-environment
+        run: |
+          echo "os_version=$(lsb_release -rs)" >> "$GITHUB_OUTPUT"
+          echo "${RUNNER_TEMP}/ffmpeg/bin" >> "$GITHUB_PATH"
+      - name: Cache FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v6.1.0
+        with:
+          path: ${{ runner.temp }}/ffmpeg
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ steps.ffmpeg-environment.outputs.os_version }}-ffmpeg-${{ hashFiles('.github/scripts/install-ffmpeg.sh') }}
+      - name: Install FFmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: sudo env FFMPEG_PREFIX="${RUNNER_TEMP}/ffmpeg" FFMPEG_INSTALL_DEPS=1 bash .github/scripts/install-ffmpeg.sh
       - run: bash .github/scripts/install-imagemagick.sh
       - uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
         with:
@@ -36,6 +50,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Prepare FFmpeg
+        id: ffmpeg-environment
+        if: matrix.features != '--no-default-features'
+        run: |
+          echo "os_version=$(lsb_release -rs)" >> "$GITHUB_OUTPUT"
+          echo "${RUNNER_TEMP}/ffmpeg/bin" >> "$GITHUB_PATH"
+      - name: Cache FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v6.1.0
+        if: matrix.features != '--no-default-features'
+        with:
+          path: ${{ runner.temp }}/ffmpeg
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ steps.ffmpeg-environment.outputs.os_version }}-ffmpeg-${{ hashFiles('.github/scripts/install-ffmpeg.sh') }}
+      - name: Install FFmpeg
+        if: matrix.features != '--no-default-features' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: sudo env FFMPEG_PREFIX="${RUNNER_TEMP}/ffmpeg" FFMPEG_INSTALL_DEPS=1 bash .github/scripts/install-ffmpeg.sh
       - run: bash .github/scripts/install-imagemagick.sh
         if: matrix.features != '--no-default-features'
       - uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
@@ -54,6 +84,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Prepare FFmpeg
+        id: ffmpeg-environment
+        if: matrix.features != '--no-default-features'
+        run: |
+          echo "os_version=$(lsb_release -rs)" >> "$GITHUB_OUTPUT"
+          echo "${RUNNER_TEMP}/ffmpeg/bin" >> "$GITHUB_PATH"
+      - name: Cache FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v6.1.0
+        if: matrix.features != '--no-default-features'
+        with:
+          path: ${{ runner.temp }}/ffmpeg
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ steps.ffmpeg-environment.outputs.os_version }}-ffmpeg-${{ hashFiles('.github/scripts/install-ffmpeg.sh') }}
+      - name: Install FFmpeg
+        if: matrix.features != '--no-default-features' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: sudo env FFMPEG_PREFIX="${RUNNER_TEMP}/ffmpeg" FFMPEG_INSTALL_DEPS=1 bash .github/scripts/install-ffmpeg.sh
       - run: bash .github/scripts/install-imagemagick.sh
         if: matrix.features != '--no-default-features'
       - uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
