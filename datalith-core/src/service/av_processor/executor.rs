@@ -351,14 +351,14 @@ pub(super) fn input_options() -> Vec<OsString> {
     .collect()
 }
 
-pub(super) fn ffmpeg_options() -> Vec<OsString> {
+pub(in crate::service) fn ffmpeg_options() -> Vec<OsString> {
     ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-progress", "pipe:1", "-nostats"]
         .into_iter()
         .map(Into::into)
         .collect()
 }
 
-pub(super) fn push(args: &mut Vec<OsString>, values: &[&str]) {
+pub(in crate::service) fn push(args: &mut Vec<OsString>, values: &[&str]) {
     args.extend(values.iter().map(Into::into));
 }
 

@@ -61,11 +61,26 @@ fn main() -> anyhow::Result<()> {
         let datalith = Datalith::new(&args.environment).await?;
         datalith.set_temporary_file_lifespan(args.temporary_file_lifespan);
         let config = ServiceConfig {
-            max_file_size: args.max_file_size.as_u64(),
-            workers: usize::from(args.workers),
-            task_retention_seconds: args.task_retention_seconds,
+            max_file_size:                                       args.max_file_size.as_u64(),
+            workers:                                             usize::from(args.workers),
+            task_retention_seconds:                              args.task_retention_seconds,
+            playback_session_seconds:                            args.playback_session_seconds,
+            mp4_export_retention_seconds:                        args.mp4_export_retention_seconds,
+            #[cfg(feature = "av-convert")]
+            av:                                                  datalith_core::AvConfig {
+                ffmpeg:          args.ffmpeg,
+                ffprobe:         args.ffprobe,
+                bitrate:         args.bitrate,
+                max_processes:   usize::from(args.ffmpeg_processes),
+                encoder_threads: args.ffmpeg_threads.map_or_else(
+                    || datalith_core::AvConfig::default().encoder_threads,
+                    usize::from,
+                ),
+            },
+            #[cfg(not(feature = "av-convert"))]
+            av:                                                  Default::default(),
             #[cfg(feature = "image-convert")]
-            image_limits: datalith_core::ImageLimits {
+            image_limits:                                        datalith_core::ImageLimits {
                 max_pixels:       u64::from(args.max_image_resolution),
                 max_frames:       args.max_image_frames,
                 max_total_pixels: args.max_image_total_pixels,
@@ -73,8 +88,7 @@ fn main() -> anyhow::Result<()> {
                 max_multiplier:   args.max_image_resolution_multiplier,
             },
             #[cfg(not(feature = "image-convert"))]
-            image_limits: Default::default(),
-            ..ServiceConfig::default()
+            image_limits:                                        Default::default(),
         };
         let service = DatalithService::new(datalith, config).await?;
         let result: anyhow::Result<()> = match args.command.unwrap_or(Command::Serve) {

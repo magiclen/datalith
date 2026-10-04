@@ -294,8 +294,8 @@ async fn migrate_ready_version_two_without_rebuilding_media() {
     .await
     .unwrap();
     sqlx::raw_sql(
-        "DROP TABLE media_hls; UPDATE sys_db_information SET value='2' WHERE key IN \
-         ('version','media_migration')",
+        "DROP TABLE mp4_artifacts; DROP TABLE playback_sessions; DROP TABLE media_hls; UPDATE \
+         sys_db_information SET value='2' WHERE key IN ('version','media_migration')",
     )
     .execute(&pool)
     .await

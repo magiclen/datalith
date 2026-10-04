@@ -39,6 +39,43 @@ pub struct CLIArgs {
     #[arg(value_parser = clap::value_parser!(u64).range(1..))]
     pub task_retention_seconds: u64,
 
+    #[arg(long, env = "DATALITH_PLAYBACK_SESSION_SECONDS", default_value = "86400", global = true)]
+    #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+    pub playback_session_seconds: u64,
+
+    #[arg(
+        long,
+        env = "DATALITH_MP4_EXPORT_RETENTION_SECONDS",
+        default_value = "86400",
+        global = true
+    )]
+    #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+    pub mp4_export_retention_seconds: u64,
+
+    #[cfg(feature = "av-convert")]
+    #[arg(long, env = "DATALITH_BITRATE", default_value = "12000k", global = true, value_parser = parse_bitrate)]
+    #[arg(help = "1080p/60 fps bitrate limit in bits per second, with k, M, or G suffixes")]
+    pub bitrate: u64,
+
+    #[cfg(feature = "av-convert")]
+    #[arg(long, env = "DATALITH_FFMPEG", default_value = "ffmpeg", global = true)]
+    pub ffmpeg: PathBuf,
+
+    #[cfg(feature = "av-convert")]
+    #[arg(long, env = "DATALITH_FFPROBE", default_value = "ffprobe", global = true)]
+    pub ffprobe: PathBuf,
+
+    #[cfg(feature = "av-convert")]
+    #[arg(long, env = "DATALITH_FFMPEG_PROCESSES", default_value = "1", global = true)]
+    #[arg(value_parser = clap::value_parser!(u16).range(1..=64))]
+    pub ffmpeg_processes: u16,
+
+    #[cfg(feature = "av-convert")]
+    #[arg(long, env = "DATALITH_FFMPEG_THREADS", global = true)]
+    #[arg(value_parser = clap::value_parser!(u16).range(1..))]
+    #[arg(help = "Encoder threads per process; defaults to half the available CPUs")]
+    pub ffmpeg_threads: Option<u16>,
+
     #[cfg(feature = "image-convert")]
     #[arg(long, env = "DATALITH_MAX_IMAGE_RESOLUTION", default_value = "50000000", global = true)]
     #[arg(value_parser = clap::value_parser!(u32).range(1..))]
@@ -106,4 +143,22 @@ fn parse_duration(value: &str) -> Result<Duration, String> {
 
 pub fn get_args() -> CLIArgs {
     CLIArgs::parse()
+}
+
+#[cfg(feature = "av-convert")]
+fn parse_bitrate(value: &str) -> Result<u64, String> {
+    let value = value.trim();
+    let (number, scale) =
+        match value.as_bytes().last().copied().map(|byte| byte.to_ascii_lowercase()) {
+            Some(b'k') => (&value[..value.len() - 1], 1000u64),
+            Some(b'm') => (&value[..value.len() - 1], 1_000_000),
+            Some(b'g') => (&value[..value.len() - 1], 1_000_000_000),
+            _ => (value, 1),
+        };
+    number
+        .parse::<u64>()
+        .ok()
+        .and_then(|number| number.checked_mul(scale))
+        .filter(|number| *number > 0)
+        .ok_or_else(|| "Expected a positive bitrate, with an optional k, M, or G suffix.".into())
 }

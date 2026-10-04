@@ -29,8 +29,8 @@ use super::{Variant, migration::content_path};
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30);
 const FULL_SCAN_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-struct PendingDirectory {
-    path:      PathBuf,
+pub(super) struct PendingDirectory {
+    pub path:  PathBuf,
     committed: bool,
 }
 
@@ -210,7 +210,10 @@ impl DatalithService {
         Ok(())
     }
 
-    async fn pending_directory(&self, id: Uuid) -> Result<PendingDirectory, ServiceError> {
+    pub(super) async fn pending_directory(
+        &self,
+        id: Uuid,
+    ) -> Result<PendingDirectory, ServiceError> {
         if self.0.shutdown.load(Ordering::Acquire) {
             return Err(ServiceError::Busy);
         }
@@ -265,7 +268,7 @@ impl DatalithService {
         }))
     }
 
-    async fn find_idempotent_task(
+    pub(super) async fn find_idempotent_task(
         &self,
         key: &str,
         fingerprint: &str,
@@ -286,7 +289,7 @@ impl DatalithService {
         Ok(Some(serde_json::from_str(row.try_get("metadata")?)?))
     }
 
-    async fn enqueue(
+    pub(super) async fn enqueue(
         &self,
         id: Uuid,
         work: Work,
@@ -331,6 +334,7 @@ impl DatalithService {
                         ..
                     } => "import",
                     Work::Export(_) => "export",
+                    Work::Mp4Export(_) => "mp4_export",
                 }
                 .into(),
                 status: TaskStatus::Queued,
@@ -377,8 +381,20 @@ impl DatalithService {
 
     /// Cancel a task; a running task stops at its next safe point.
     pub async fn cancel_task(&self, id: Uuid) -> Result<Task, ServiceError> {
+        self.cancel_task_with_session(id, None).await
+    }
+
+    /// Cancel a task with the credential required by a single-use MP4 export.
+    pub async fn cancel_task_with_session(
+        &self,
+        id: Uuid,
+        session: Option<&str>,
+    ) -> Result<Task, ServiceError> {
         let _mutation = self.0.mutations.lock().await;
         let mut task = self.get_task(id).await?.ok_or(ServiceError::NotFound)?;
+        if task.kind == "mp4_export" {
+            self.verify_export_authorization(&self.saved_mp4_work(id).await?, session).await?;
+        }
         if task.status.is_terminal() {
             return Ok(task);
         }
@@ -399,6 +415,15 @@ impl DatalithService {
 
     /// Queue a failed or cancelled task again.
     pub async fn retry_task(&self, id: Uuid) -> Result<Task, ServiceError> {
+        self.retry_task_with_session(id, None).await
+    }
+
+    /// Retry a task with the credential required by a single-use MP4 export.
+    pub async fn retry_task_with_session(
+        &self,
+        id: Uuid,
+        session: Option<&str>,
+    ) -> Result<Task, ServiceError> {
         let _gate = self.0.writes.try_read().map_err(|_| ServiceError::Busy)?;
         let _mutation = self.0.mutations.lock().await;
         let mut task = self.get_task(id).await?.ok_or(ServiceError::NotFound)?;
@@ -407,7 +432,16 @@ impl DatalithService {
                 "only failed or cancelled tasks can be retried".into(),
             ));
         }
-        if task.kind != "export" && !fs::try_exists(self.work_directory(id).join("input")).await? {
+        if task.kind == "mp4_export" {
+            let work = self.saved_mp4_work(id).await?;
+            self.verify_export_authorization(&work, session).await?;
+            self.validate_export_work(&work).await?;
+            if !fs::try_exists(self.work_directory(id).join("snapshot")).await? {
+                return Err(ServiceError::NotFound);
+            }
+        } else if task.kind != "export"
+            && !fs::try_exists(self.work_directory(id).join("input")).await?
+        {
             return Err(ServiceError::NotFound);
         }
         task.status = TaskStatus::Queued;
@@ -548,6 +582,7 @@ impl DatalithService {
                 ..
             }
             | Work::Export(_) => (),
+            Work::Mp4Export(_) => (),
         }
         task.status = TaskStatus::Running;
         task.stage = if matches!(task.kind.as_str(), "image" | "audio" | "video") {
@@ -634,6 +669,9 @@ impl DatalithService {
                         Work::Export(options) => {
                             service.export_archive(id, options, cancel.clone()).await
                         },
+                        Work::Mp4Export(work) => {
+                            service.run_mp4_export(id, work, cancel.clone()).await
+                        },
                         Work::Import {
                             ..
                         } => service.import_archive(id, cancel.clone()).await,
@@ -689,6 +727,9 @@ impl DatalithService {
             }
             if let Err(error) = service.expire_tasks().await {
                 tracing::warn!(%error, "task cleanup failed");
+            }
+            if let Err(error) = service.expire_mp4_artifacts().await {
+                tracing::warn!(%error, "MP4 artifact cleanup failed");
             }
             if let Err(error) = service.clear_released_files().await {
                 tracing::warn!(%error, "released file cleanup failed");
@@ -761,6 +802,12 @@ impl DatalithService {
         while let Some(entry) = entries.next_entry().await? {
             let name = entry.file_name();
             if (name == "input" && task.status != TaskStatus::Succeeded)
+                || (name == "snapshot"
+                    && task.kind == "mp4_export"
+                    && task.status != TaskStatus::Succeeded)
+                || (name == "export.mp4"
+                    && task.kind == "mp4_export"
+                    && task.status == TaskStatus::Succeeded)
                 || (name == "export.tar"
                     && task.kind == "export"
                     && task.status == TaskStatus::Succeeded)
@@ -776,7 +823,7 @@ impl DatalithService {
         Ok(())
     }
 
-    async fn expire_tasks(&self) -> Result<(), ServiceError> {
+    pub(super) async fn expire_tasks(&self) -> Result<(), ServiceError> {
         let Ok(_artifacts) = self.0.artifacts.try_write() else {
             return Ok(());
         };
@@ -787,9 +834,11 @@ impl DatalithService {
         let mutation = self.0.mutations.lock().await;
         let ids: Vec<Uuid> = sqlx::query_scalar(
             "DELETE FROM tasks WHERE status IN ('succeeded','failed','cancelled') AND updated_at \
-             < ? RETURNING id",
+             < ? AND NOT EXISTS(SELECT 1 FROM mp4_artifacts a WHERE a.task_id=tasks.id AND \
+             a.expires_at>?) RETURNING id",
         )
         .bind(cutoff)
+        .bind(Utc::now().timestamp_millis())
         .fetch_all(&self.0.datalith.0.db)
         .await?;
         // The tasks are gone, so nothing else uses their directories.
@@ -979,7 +1028,7 @@ impl DatalithService {
     }
 }
 
-fn validate_idempotency_key(key: Option<&str>) -> Result<(), ServiceError> {
+pub(super) fn validate_idempotency_key(key: Option<&str>) -> Result<(), ServiceError> {
     if key.is_some_and(|key| {
         key.is_empty() || key.len() > 128 || key.bytes().any(|byte| !(0x20..=0x7E).contains(&byte))
     }) {
@@ -996,6 +1045,9 @@ fn process_fingerprint(source: Uuid, options: &ProcessOptions) -> Result<String,
 }
 
 fn request_fingerprint(work: &Work) -> Result<String, ServiceError> {
+    if let Work::Mp4Export(work) = work {
+        return mp4_fingerprint(work.media_id, &work.options);
+    }
     if let Work::Process {
         source,
         options,
@@ -1010,6 +1062,14 @@ fn request_fingerprint(work: &Work) -> Result<String, ServiceError> {
         upload.remove("file_size");
         upload.remove("recipe");
     }
+    Ok(hex::encode(Sha256::digest(serde_json::to_vec(&request)?)))
+}
+
+pub(super) fn mp4_fingerprint(
+    media: Uuid,
+    options: &super::Mp4ExportOptions,
+) -> Result<String, ServiceError> {
+    let request = serde_json::json!({"Mp4Export": {"media_id": media, "options": options}});
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(&request)?)))
 }
 

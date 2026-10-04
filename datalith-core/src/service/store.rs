@@ -87,15 +87,27 @@ impl DatalithService {
     }
 
     /// Open a file of a media item.
-    /// A single-use item is consumed unless `head` is `true`.
+    /// Single-use images and resources are consumed unless `head` is `true`.
     pub async fn open_content(
         &self,
         id: Uuid,
         request: ContentRequest,
         head: bool,
     ) -> Result<Content, ServiceError> {
-        let media = self.get_media(id).await?.ok_or(ServiceError::NotFound)?;
-        let _write_gate = if media.single_use && !head {
+        self.open_content_with_session(id, request, head, None).await
+    }
+
+    /// Open content with a credential for single-use audio or video.
+    pub async fn open_content_with_session(
+        &self,
+        id: Uuid,
+        request: ContentRequest,
+        head: bool,
+        session: Option<&str>,
+    ) -> Result<Content, ServiceError> {
+        let media = self.authorize_media(id, session).await?;
+        let playback = matches!(media.kind, MediaKind::Audio | MediaKind::Video);
+        let _write_gate = if media.single_use && !head && !playback {
             Some(self.0.writes.try_read().map_err(|_| ServiceError::Busy)?)
         } else {
             None
@@ -148,7 +160,10 @@ impl DatalithService {
             },
             Err(error) => return Err(error.into()),
         };
-        if media.single_use && !head {
+        if playback {
+            self.authorize_media(id, session).await?;
+        }
+        if media.single_use && !head && !playback {
             let result = sqlx::query(
                 "UPDATE media SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL AND \
                  (expires_at IS NULL OR expires_at > ?)",
@@ -167,6 +182,7 @@ impl DatalithService {
             metadata,
             created_at: media.created_at,
             single_use: media.single_use,
+            repeatable: !media.single_use || playback,
             temporary: media.expires_at.is_some() || media.single_use,
             _file_guard: Some(guard),
             _artifact_guard: None,
@@ -216,16 +232,31 @@ impl DatalithService {
         };
         // `UNION` lets each part use its own index; `OR` would scan the whole table.
         let ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM media WHERE expires_at <= ? UNION SELECT id FROM media WHERE \
-             consumed_at IS NOT NULL",
+            "SELECT id FROM media WHERE expires_at <= ? UNION SELECT m.id FROM media m WHERE \
+             consumed_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM playback_sessions s WHERE \
+             s.media_id=m.id AND s.expires_at>?)",
         )
+        .bind(Utc::now().timestamp_millis())
         .bind(Utc::now().timestamp_millis())
         .fetch_all(&self.0.datalith.0.db)
         .await?;
         for id in ids {
             // Lock for each deletion so that other requests can run between them.
             let _mutation = self.0.mutations.lock().await;
-            self.delete_media_inner(id).await?;
+            let eligible = sqlx::query(
+                "SELECT 1 FROM media m WHERE id=? AND (expires_at<=? OR (consumed_at IS NOT NULL \
+                 AND NOT EXISTS(SELECT 1 FROM playback_sessions s WHERE s.media_id=m.id AND \
+                 s.expires_at>?)))",
+            )
+            .bind(id)
+            .bind(Utc::now().timestamp_millis())
+            .bind(Utc::now().timestamp_millis())
+            .fetch_optional(&self.0.datalith.0.db)
+            .await?
+            .is_some();
+            if eligible {
+                self.delete_media_inner(id).await?;
+            }
         }
         Ok(())
     }
@@ -464,12 +495,44 @@ impl DatalithService {
 
     /// Open the archive created by a finished export task.
     pub async fn open_artifact(&self, id: Uuid) -> Result<Content, ServiceError> {
+        self.open_artifact_with_session(id, None).await
+    }
+
+    /// Open a TAR or MP4 artifact, with a playback credential when required.
+    pub async fn open_artifact_with_session(
+        &self,
+        id: Uuid,
+        session: Option<&str>,
+    ) -> Result<Content, ServiceError> {
         let guard = self.0.artifacts.clone().read_owned().await;
         let task = self.get_task(id).await?.ok_or(ServiceError::NotFound)?;
-        if task.kind != "export" || task.status != super::TaskStatus::Succeeded {
+        if !matches!(task.kind.as_str(), "export" | "mp4_export")
+            || task.status != super::TaskStatus::Succeeded
+        {
             return Err(ServiceError::NotFound);
         }
-        let path = self.work_directory(id).join("export.tar");
+        let mut single_use = false;
+        let path = if task.kind == "mp4_export" {
+            let row = sqlx::query(
+                "SELECT media_id, session_hash FROM mp4_artifacts WHERE task_id=? AND expires_at>?",
+            )
+            .bind(id)
+            .bind(Utc::now().timestamp_millis())
+            .fetch_optional(&self.0.datalith.0.db)
+            .await?
+            .ok_or(ServiceError::NotFound)?;
+            if let Some(expected) = row.try_get::<Option<String>, _>("session_hash")? {
+                let hash = super::sessions::token_hash(session.ok_or(ServiceError::NotFound)?)?;
+                if expected != hash {
+                    return Err(ServiceError::NotFound);
+                }
+                self.authorize_media_hash(row.try_get("media_id")?, Some(&hash)).await?;
+                single_use = true;
+            }
+            self.work_directory(id).join("export.mp4")
+        } else {
+            self.work_directory(id).join("export.tar")
+        };
         let metadata: MediaFile = serde_json::from_value(
             task.result.and_then(|result| result.get("artifact").cloned()).ok_or_else(|| {
                 ServiceError::Internal("export task has no artifact metadata".into())
@@ -479,7 +542,8 @@ impl DatalithService {
             file: fs::File::open(path).await?,
             metadata,
             created_at: task.updated_at,
-            single_use: false,
+            single_use,
+            repeatable: true,
             temporary: true,
             _file_guard: None,
             _artifact_guard: Some(guard),

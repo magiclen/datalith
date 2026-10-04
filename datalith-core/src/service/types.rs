@@ -117,7 +117,7 @@ impl ProcessingMethod {
 pub struct Retention {
     /// Remove the media after this many seconds, from 1 to 36,000,000.
     pub expires_in_seconds: Option<u64>,
-    /// Allow the content to be downloaded only once.
+    /// Allow one content GET for images/resources, or one playback claim for audio/video.
     pub single_use:         bool,
 }
 
@@ -441,7 +441,7 @@ pub struct Media {
     pub warnings:    Vec<ProcessingWarning>,
     /// The time when the media expires.
     pub expires_at:  Option<DateTime<Utc>>,
-    /// Whether the content can be downloaded only once.
+    /// Whether this media allows one GET or one fixed playback-session claim.
     pub single_use:  bool,
     /// The time when the single-use content was downloaded.
     pub consumed_at: Option<DateTime<Utc>>,
@@ -650,6 +650,35 @@ pub struct Mp4ExportOptions {
     pub variant: String,
 }
 
+/// The result of remuxing an existing video variant into MP4.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Mp4ExportResult {
+    /// The source media identifier.
+    pub media_id:      Uuid,
+    /// The selected video variant.
+    pub variant:       String,
+    /// The selected audio profile, when the source has audio.
+    pub audio:         Option<String>,
+    /// The completed artifact metadata.
+    pub artifact:      MediaFile,
+    /// The artifact download path, without a session credential.
+    pub artifact_path: String,
+    /// The fixed time when this artifact expires.
+    pub expires_at:    DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct Mp4Work {
+    pub media_id:          Uuid,
+    pub options:           Mp4ExportOptions,
+    pub audio:             Option<String>,
+    pub inventory:         HlsInventory,
+    pub file_name:         String,
+    pub expires_at:        Option<DateTime<Utc>>,
+    pub session_hash:      Option<String>,
+    pub retention_seconds: u64,
+}
+
 /// The result of claiming a single-use playback session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybackSession {
@@ -657,6 +686,37 @@ pub struct PlaybackSession {
     pub token:      String,
     /// The time when this fixed session expires.
     pub expires_at: DateTime<Utc>,
+}
+
+/// Select the audio profiles advertised by a video master playlist.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HlsAudioFilter {
+    /// Advertise AAC renditions.
+    #[default]
+    Aac,
+    /// Advertise every available audio profile.
+    All,
+    /// Advertise only combinations with FLAC.
+    Flac,
+}
+
+/// A generated HLS playlist.
+#[derive(Debug, Clone)]
+pub struct HlsPlaylist {
+    /// The M3U8 body.
+    pub body:      String,
+    /// Whether the response must not be cached.
+    pub temporary: bool,
+}
+
+/// Select an initialization file or one media segment.
+#[derive(Debug, Clone, Copy)]
+pub enum HlsAsset {
+    /// The track initialization file.
+    Initialization,
+    /// A segment number, starting from zero.
+    Segment(u32),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -771,6 +831,21 @@ pub(super) fn validate_assets(
         },
         MediaKind::Audio => {
             let audio = media.audio.as_ref().ok_or_else(invalid)?;
+            if !audio.duration_seconds.is_finite() || audio.duration_seconds <= 0.0 {
+                return Err(invalid());
+            }
+            if audio.variants.iter().filter(|variant| variant.codec == "aac").count() != 1
+                || audio.variants.len() > 2
+            {
+                return Err(invalid());
+            }
+            let mut ids = HashSet::new();
+            for variant in &audio.variants {
+                super::hls::validate_audio(variant, true)?;
+                if !ids.insert(&variant.id) {
+                    return Err(invalid());
+                }
+            }
             if media.video.is_some()
                 || inventory.is_some()
                 || !media.variants.is_empty()
@@ -783,6 +858,7 @@ pub(super) fn validate_assets(
         MediaKind::Video => {
             let video = media.video.as_ref().ok_or_else(invalid)?;
             let inventory = inventory.ok_or_else(invalid)?;
+            super::hls::validate_video(video, inventory)?;
             if media.audio.is_some()
                 || !media.variants.is_empty()
                 || video.variants.is_empty()
@@ -822,6 +898,7 @@ pub(super) fn validate_assets(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) enum Work {
+    Mp4Export(Mp4Work),
     Upload {
         options: UploadOptions,
         #[serde(default, skip_serializing_if = "Option::is_none")]

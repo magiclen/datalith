@@ -1,11 +1,14 @@
 use datalith_core::{
-    DatalithService, ExportOptions, Media, Page, ProcessOptions, ServiceError, Task, UploadOptions,
-    Uuid,
+    DatalithService, ExportOptions, Media, Mp4ExportOptions, Page, PlaybackSession, ProcessOptions,
+    ServiceError, Task, UploadOptions, Uuid,
 };
 use rocket::{
     Data, State,
     http::{ContentType, Status},
-    response::{content::RawJson, status::Accepted},
+    response::{
+        content::{RawHtml, RawJson},
+        status::{Accepted, Custom},
+    },
     serde::json::Json,
 };
 use rocket_multipart_form_data::{
@@ -129,14 +132,22 @@ pub(super) async fn task(
     Ok(Json(service.get_task(id).await?.ok_or(ServiceError::NotFound)?))
 }
 
-#[post("/tasks/<id>/cancel")]
-pub(super) async fn cancel(service: &State<DatalithService>, id: Uuid) -> TaskResponse {
-    Ok(Accepted(Json(service.cancel_task(id).await?)))
+#[post("/tasks/<id>/cancel?<session>")]
+pub(super) async fn cancel(
+    service: &State<DatalithService>,
+    id: Uuid,
+    session: Option<&str>,
+) -> TaskResponse {
+    Ok(Accepted(Json(service.cancel_task_with_session(id, session).await?)))
 }
 
-#[post("/tasks/<id>/retry")]
-pub(super) async fn retry(service: &State<DatalithService>, id: Uuid) -> TaskResponse {
-    Ok(Accepted(Json(service.retry_task(id).await?)))
+#[post("/tasks/<id>/retry?<session>")]
+pub(super) async fn retry(
+    service: &State<DatalithService>,
+    id: Uuid,
+    session: Option<&str>,
+) -> TaskResponse {
+    Ok(Accepted(Json(service.retry_task_with_session(id, session).await?)))
 }
 
 #[get("/media?<page>&<per_page>")]
@@ -190,4 +201,29 @@ pub(super) fn capabilities(service: &State<DatalithService>) -> Json<Value> {
 #[get("/openapi.json")]
 pub(super) fn openapi() -> RawJson<&'static str> {
     RawJson(include_str!("../openapi.json"))
+}
+
+#[post("/media/<id>/playback-sessions")]
+pub(super) async fn playback_session(
+    service: &State<DatalithService>,
+    id: Uuid,
+    key: IdempotencyKey,
+) -> Result<Custom<Json<PlaybackSession>>, ApiError> {
+    Ok(Custom(Status::Created, Json(service.claim_playback_session(id, key.0).await?)))
+}
+
+#[get("/player")]
+pub(super) fn player() -> RawHtml<&'static str> {
+    RawHtml(include_str!("../player.html"))
+}
+
+#[post("/media/<id>/mp4-exports?<session>", format = "json", data = "<options>")]
+pub(super) async fn mp4_export(
+    service: &State<DatalithService>,
+    id: Uuid,
+    session: Option<&str>,
+    key: IdempotencyKey,
+    options: Json<Mp4ExportOptions>,
+) -> TaskResponse {
+    Ok(Accepted(Json(service.submit_mp4_export(id, options.into_inner(), session, key.0).await?)))
 }

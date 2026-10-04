@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Datalith playback check</title>
+  <style>
+    :root { color-scheme: dark; font: 16px/1.5 system-ui, sans-serif; background: #111820; color: #eef3f8; }
+    body { max-width: 1000px; margin: auto; padding: 24px; }
+    h1 { font-size: 1.6rem; margin: 0; }
+    h2 { font-size: 1.1rem; }
+    p { color: #bbc8d6; }
+    form, .controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 20px 0; }
+    label { display: flex; flex-direction: column; gap: 5px; }
+    .media-input { flex: 1; min-width: min(300px, 100%); }
+    input, select, button { font: inherit; color: inherit; border: 1px solid #526476; border-radius: 5px; padding: 9px 12px; background: #1b2836; }
+    button { cursor: pointer; }
+    button.primary { background: #205e86; border-color: #428db9; }
+    button:disabled, select:disabled { cursor: default; opacity: .5; }
+    :focus-visible { outline: 3px solid #91cef6; outline-offset: 3px; }
+    .preference { flex-direction: row; align-items: center; padding: 9px 0; }
+    .preference input { width: 18px; height: 18px; }
+    video { width: 100%; max-height: 65vh; background: black; border-radius: 6px; }
+    #status { min-height: 1.5em; color: #e8f0f8; }
+    #note { font-size: .9rem; }
+    dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 20px 0; }
+    dl div { background: #1b2632; padding: 10px 12px; border-radius: 5px; }
+    dt { color: #bbc8d6; font-size: .85rem; }
+    dd { margin: 3px 0 0; overflow-wrap: anywhere; }
+    #events { height: 230px; overflow: auto; background: #0b1118; border: 1px solid #354657; border-radius: 5px; padding: 12px; font: 13px/1.6 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+    @media (max-width: 650px) { body { padding: 16px; } dl { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+</head>
+<body>
+  <h1>Datalith playback check</h1>
+  <p>Load a video media ID to check playback, quality changes, and audio fallback.</p>
+  <p id="capability" role="status" hidden></p>
+  <form id="media-form">
+    <label class="media-input">Media ID<input id="media-id" autocomplete="off" spellcheck="false" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required></label>
+    <button id="load" type="submit" class="primary">Load media</button>
+  </form>
+  <p id="status" role="status" aria-live="polite">No media loaded.</p>
+  <video id="video" controls playsinline preload="none"></video>
+  <div class="controls">
+    <button id="start" class="primary" disabled>Start playback</button>
+    <button id="stop" disabled>Stop</button>
+    <label>Quality<select id="quality" disabled><option value="auto">Auto</option></select></label>
+    <label class="preference"><input type="checkbox" id="lossless">Prefer lossless audio</label>
+    <button id="native-flac" hidden disabled>Try FLAC</button>
+  </div>
+  <p id="note">Playback starts with AAC when audio is present.</p>
+  <dl>
+    <div><dt>Engine</dt><dd id="engine">—</dd></div>
+    <div><dt>Video / audio</dt><dd id="current">—</dd></div>
+    <div><dt>Buffer ahead</dt><dd id="buffer">—</dd></div>
+    <div><dt>Estimated bandwidth</dt><dd id="bandwidth">—</dd></div>
+    <div><dt>Last fragment throughput</dt><dd id="throughput">—</dd></div>
+    <div><dt>Dropped frames</dt><dd id="dropped">—</dd></div>
+    <div><dt>Startup / stalls</dt><dd id="startup">—</dd></div>
+    <div><dt>Session</dt><dd id="session">—</dd></div>
+  </dl>
+  <h2>Events</h2>
+  <button id="clear">Clear events</button>
+  <pre id="events" aria-label="Playback events"></pre>
+  <script>
+    (() => {
+      "use strict";
+      const ui = Object.fromEntries(["media-form", "media-id", "load", "status", "capability", "video", "start", "stop", "quality", "lossless", "native-flac", "note", "engine", "current", "buffer", "bandwidth", "throughput", "dropped", "startup", "session", "events", "clear"].map(id => [id, document.getElementById(id)]));
+      const video = ui.video;
+      const serviceRoot = new URL(window.location.href);
+      serviceRoot.pathname = serviceRoot.pathname.replace(/api\/v1\/player\/?$/, "");
+      serviceRoot.search = "";
+      serviceRoot.hash = "";
+      const apiRoot = new URL("api/v1/", serviceRoot);
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      let state = null;
+      const eventLines = [];
+
+      function log(message) {
+        // Log fixed messages and measured values, never request URLs or error objects.
+        eventLines.push(`${new Date().toLocaleTimeString()}  ${message}`);
+        if (eventLines.length > 200) eventLines.shift();
+        ui.events.textContent = eventLines.join("\n");
+        ui.events.scrollTop = ui.events.scrollHeight;
+      }
+
+      function status(message) {
+        ui.status.textContent = message;
+      }
+
+      function serviceURL(path) {
+        const url = new URL(path, serviceRoot);
+        if (url.origin !== apiRoot.origin || !url.pathname.startsWith(apiRoot.pathname)) throw new Error("Rejected media path.");
+        return url;
+      }
+
+      function playbackURL(path, s) {
+        const url = serviceURL(path);
+        if (s.session) url.searchParams.set("session", s.session.token);
+        return url;
+      }
+
+      function masterURL(s, profile) {
+        const url = playbackURL(s.media.video.master_path, s);
+        url.searchParams.set("audio", profile);
+        return url;
+      }
+
+      async function request(url, options = {}) {
+        const response = await fetch(url, { credentials: "same-origin", cache: "no-store", ...options });
+        if (!response.ok) throw new Error(`Request failed (HTTP ${response.status}).`);
+        return response;
+      }
+
+      function newClaimKey() {
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        return Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+      }
+
+      function bufferAhead() {
+        for (let i = 0; i < video.buffered.length; i++) {
+          if (video.currentTime >= video.buffered.start(i) - 0.05 && video.currentTime <= video.buffered.end(i)) return Math.max(0, video.buffered.end(i) - video.currentTime);
+        }
+        return 0;
+      }
+
+      function measuredBandwidth(s) {
+        if (!s.hls || s.samples < 3 || Date.now() - s.measuredAt > 60000) return NaN;
+        const value = s.hls.bandwidthEstimate;
+        return Number.isFinite(value) && value > 0 ? value : NaN;
+      }
+
+      function rate(value) {
+        return Number.isFinite(value) && value > 0 ? `${(value / 1000000).toFixed(2)} Mbps` : "Not measured";
+      }
+
+      function parseAttributes(line) {
+        const attrs = {};
+        for (const match of line.matchAll(/(?:^|,)([A-Z0-9-]+)=("[^"]*"|[^,]*)/g)) attrs[match[1]] = match[2].replace(/^"|"$/g, "");
+        return attrs;
+      }
+
+      function parseFlacMaster(text, url, s) {
+        const entries = [];
+        let attrs = null;
+        for (const sourceLine of text.split(/\r?\n/)) {
+          const line = sourceLine.trim();
+          if (line.startsWith("#EXT-X-STREAM-INF:")) attrs = parseAttributes(line.slice(18));
+          else if (attrs && line && !line.startsWith("#")) {
+            const codecs = (attrs.CODECS || "").split(",").map(codec => codec.trim());
+            const audioCodec = codecs.find(codec => codec.toLowerCase() === "flac");
+            const videoCodec = codecs.find(codec => /^avc[13]\./i.test(codec));
+            const path = serviceURL(new URL(line, url).href).pathname;
+            const variant = s.media.video.variants.find(item => serviceURL(item.playlist_path).pathname === path);
+            const bandwidth = Number(attrs.BANDWIDTH);
+            if (audioCodec && videoCodec && variant && variant.resolution >= 1080 && Number.isFinite(bandwidth) && bandwidth > 0) entries.push({ variant, bandwidth, audioCodec, videoCodec });
+            attrs = null;
+          }
+        }
+        return entries;
+      }
+
+      function flacSupported(entry, engine) {
+        const audioType = `audio/mp4; codecs="${entry.audioCodec}"`;
+        const videoType = `video/mp4; codecs="${entry.videoCodec}"`;
+        if (engine === "hls.js") {
+          const source = Hls.getMediaSource();
+          return Boolean(source && source.isTypeSupported(audioType) && source.isTypeSupported(videoType));
+        }
+        return Boolean(video.canPlayType(audioType) && video.canPlayType(videoType));
+      }
+
+      async function inspectFlac(s) {
+        if (!s.media.video.audio.some(audio => audio.codec === "flac")) {
+          s.flacNote = "No FLAC audio is stored for this media.";
+          return;
+        }
+        try {
+          const url = masterURL(s, "flac");
+          const response = await request(url, { signal: s.abort.signal });
+          const entries = parseFlacMaster(await response.text(), url, s);
+          s.flacEntries = entries.filter(entry => flacSupported(entry, s.engine));
+          s.flacNote = s.flacEntries.length ? "FLAC capability detected; playback will still be checked." : "FLAC capability was not detected. AAC remains available.";
+        } catch (_) {
+          s.flacNote = "FLAC capability could not be checked. AAC remains available.";
+        }
+      }
+
+      function variantForLevel(level, s) {
+        if (!level) return null;
+        const path = serviceURL(level.uri || level.url[0]).pathname;
+        return s.media.video.variants.find(variant => serviceURL(variant.playlist_path).pathname === path) || null;
+      }
+
+      function audioForLevel(level, s) {
+        const group = level?.attrs?.AUDIO;
+        return s.media.video.audio.find(audio => audio.id === group) || null;
+      }
+
+      function audioLabel(audio, profile) {
+        if (!audio) return profile === "flac" ? "FLAC" : "No audio";
+        return audio.codec === "flac" ? "FLAC" : `AAC ${Math.round(audio.bitrate / 1000)}k`;
+      }
+
+      function playbackLabel(s) {
+        return s.media.video.audio.length ? `${s.profile.toUpperCase()} audio` : "video without audio";
+      }
+
+      function levelLabel(level, s) {
+        const variant = variantForLevel(level, s);
+        const picture = variant ? `${variant.resolution}p / ${variant.fps} fps` : `${level.height}p / ${Math.round(level.frameRate)} fps`;
+        return `${picture} / ${audioLabel(audioForLevel(level, s), s.profile)}`;
+      }
+
+      function setControls(s) {
+        const busy = Boolean(s?.busy || s?.switching);
+        ui.load.disabled = busy;
+        ui["media-id"].disabled = busy;
+        ui.start.disabled = !s?.media || busy;
+        ui.stop.disabled = !s?.active;
+        ui.quality.disabled = !s?.active || busy || s.engine !== "hls.js";
+        ui["native-flac"].hidden = s?.engine !== "native HLS";
+        ui["native-flac"].disabled = !s?.active || busy || !ui.lossless.checked || !s.flacEntries.length || s.profile === "flac" || Date.now() < s.cooldownUntil;
+      }
+
+      function updateNote(s) {
+        if (!s) return;
+        const capability = s.flacNote || "FLAC capability has not been checked yet.";
+        if (s.engine === "native HLS") ui.note.textContent = `Native HLS uses system quality selection. Bandwidth and audio-track observations are limited. ${capability} Use Try FLAC for a manual check.`;
+        else ui.note.textContent = `${capability} Lossless preference requires 30 seconds of stable playback, 15 seconds of buffer, and measured bandwidth headroom. Source changes may pause playback briefly.`;
+      }
+
+      function destroyPlayer(s) {
+        s.sourceGeneration++;
+        s.active = false;
+        const hls = s.hls;
+        s.hls = null;
+        if (hls) hls.destroy();
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+        s.switching = false;
+        s.pendingRestore = null;
+        setControls(s);
+      }
+
+      function stopPlayer(s, message) {
+        if (!s) return;
+        destroyPlayer(s);
+        s.stableSince = null;
+        s.waitingAt = null;
+        status(message);
+        log(message);
+      }
+
+      function manualLevel(s) {
+        if (!s.hls || !s.manual) return -1;
+        const estimate = measuredBandwidth(s);
+        const levels = s.hls.levels.map((level, index) => ({ level, index })).filter(item => variantForLevel(item.level, s)?.id === s.manual);
+        levels.sort((left, right) => left.level.bitrate - right.level.bitrate);
+        const affordable = levels.filter(item => Number.isFinite(estimate) && item.level.bitrate * 1.5 <= estimate);
+        return (affordable.at(-1) || levels[0])?.index ?? -1;
+      }
+
+      function applyQuality(s, immediate = false) {
+        if (!s.hls) return;
+        const index = s.manual ? manualLevel(s) : -1;
+        if (index === s.manualLevel) return;
+        if (!immediate && index >= 0 && Date.now() - s.manualChangedAt < 10000) return;
+        s.manualLevel = index;
+        s.manualChangedAt = Date.now();
+        s.hls.currentLevel = index;
+      }
+
+      function snapshot(s, play) {
+        if (s.pendingRestore) return { ...s.pendingRestore, paused: play ? false : s.pendingRestore.paused };
+        return { time: s.active ? video.currentTime : 0, paused: play ? false : video.paused, rate: video.playbackRate, muted: video.muted, volume: video.volume };
+      }
+
+      function fallback(s, reason) {
+        if (state !== s || s.profile !== "flac" || !s.active) return;
+        s.cooldownUntil = Date.now() + 60000;
+        log(`AAC fallback: ${reason}. FLAC cooldown: 60 seconds.`);
+        switchProfile(s, "aac");
+      }
+
+      function restore(s, generation) {
+        if (state !== s || s.sourceGeneration !== generation || !s.pendingRestore) return;
+        const saved = s.pendingRestore;
+        const time = Number.isFinite(video.duration) ? Math.min(saved.time, Math.max(0, video.duration - 0.05)) : saved.time;
+        if (time > 0) video.currentTime = time;
+        video.playbackRate = saved.rate;
+        video.muted = saved.muted;
+        video.volume = saved.volume;
+        s.pendingRestore = null;
+        if (!saved.paused) video.play().catch(() => {
+          if (state === s && s.sourceGeneration === generation) {
+            s.switching = false;
+            setControls(s);
+            status("Ready. Press Play on the video to continue.");
+          }
+        });
+        else {
+          s.switching = false;
+          status(`Ready with ${playbackLabel(s)}.`);
+        }
+        setControls(s);
+      }
+
+      function switchProfile(s, profile, play = false, preferredVariant = null) {
+        if (state !== s) return;
+        const saved = snapshot(s, play);
+        const estimate = measuredBandwidth(s);
+        destroyPlayer(s);
+        const generation = s.sourceGeneration;
+        s.active = true;
+        s.switching = true;
+        s.profile = profile;
+        s.pendingRestore = saved;
+        s.stableSince = null;
+        s.waitingAt = null;
+        s.lowBufferSince = null;
+        s.manualLevel = -2;
+        s.lastLevel = null;
+        const url = masterURL(s, profile);
+        log(`Loading ${profile.toUpperCase()} playback source.`);
+        status(`Loading ${profile.toUpperCase()} playback…`);
+        setControls(s);
+        video.addEventListener("loadedmetadata", () => restore(s, generation), { once: true });
+        if (s.engine === "native HLS") {
+          video.src = url.href;
+          video.load();
+          return;
+        }
+        // The server also carries the session token in nested playlist URLs.
+        class ServiceLoader extends Hls.DefaultConfig.loader {
+          load(context, config, callbacks) {
+            try {
+              context.url = playbackURL(context.url, s).href;
+            } catch (_) {
+              callbacks.onError({ code: 0, text: "Rejected media path." }, context, null, this.stats);
+              return;
+            }
+            super.load(context, config, callbacks);
+          }
+        }
+        const config = { debug: false, loader: ServiceLoader, autoStartLoad: false, startLevel: 0, capLevelToPlayerSize: true, capLevelOnFPSDrop: true, maxBufferLength: 30, maxMaxBufferLength: 60, backBufferLength: 30, lowLatencyMode: false };
+        if (Number.isFinite(estimate)) config.abrEwmaDefaultEstimate = estimate;
+        const hls = new Hls(config);
+        s.hls = hls;
+        const current = () => state === s && s.sourceGeneration === generation;
+        hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+          if (current()) hls.loadSource(url.href);
+        });
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (!current()) return;
+          if (s.manual) {
+            applyQuality(s, true);
+            hls.startLevel = manualLevel(s);
+          } else if (preferredVariant) {
+            const index = hls.levels.findIndex(level => variantForLevel(level, s)?.id === preferredVariant);
+            if (index >= 0) hls.startLevel = index;
+          }
+          hls.startLoad(saved.time);
+          log(`Manifest ready: ${hls.levels.length} legal video/audio combinations.`);
+        });
+        hls.on(Hls.Events.LEVELS_UPDATED, () => {
+          if (!current()) return;
+          s.manualLevel = -2;
+          applyQuality(s, true);
+        });
+        hls.on(Hls.Events.LEVEL_SWITCHED, (_, data) => {
+          if (!current()) return;
+          s.lastLevel = hls.levels[data.level];
+          if (s.lastLevel) {
+            ui.current.textContent = levelLabel(s.lastLevel, s);
+            log(`Video/audio change: ${levelLabel(s.lastLevel, s)}.`);
+          }
+        });
+        hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, () => {
+          if (current()) log(`Audio track active: ${audioLabel(audioForLevel(s.lastLevel, s), s.profile)}.`);
+        });
+        hls.on(Hls.Events.FRAG_LOADED, (_, data) => {
+          if (!current() || !Number.isFinite(data.frag.sn)) return;
+          const stats = data.part?.stats || data.frag.stats;
+          const elapsed = stats.loading.end - stats.loading.start;
+          if (elapsed > 0 && stats.loaded > 0) {
+            s.throughput = stats.loaded * 8000 / elapsed;
+            s.samples++;
+            s.measuredAt = Date.now();
+          }
+        });
+        hls.on(Hls.Events.FPS_DROP, (_, data) => {
+          if (!current() || !(data.currentDropped > 0)) return;
+          s.stableSince = null;
+          log(`Dropped frames: ${data.currentDropped}; total ${data.totalDroppedFrames}.`);
+        });
+        hls.on(Hls.Events.ERROR, (_, data) => {
+          if (!current()) return;
+          const code = /^[a-zA-Z]+$/.test(data.details || "") ? data.details : "playbackError";
+          log(`HLS error: ${code}${data.fatal ? " (fatal)" : ""}.`);
+          if (!data.fatal) return;
+          if (s.profile === "flac") fallback(s, "playback error");
+          else stopPlayer(s, "Playback failed. Start playback to retry.");
+        });
+        hls.attachMedia(video);
+      }
+
+      async function startPlayback() {
+        const s = state;
+        if (!s?.media || s.busy || s.switching) return;
+        s.busy = true;
+        setControls(s);
+        try {
+          if (s.media.single_use && !s.session) {
+            s.claimKey ||= newClaimKey();
+            const url = new URL(`media/${s.media.id}/playback-sessions`, apiRoot);
+            const response = await request(url, { method: "POST", headers: { "Idempotency-Key": s.claimKey }, signal: s.abort.signal });
+            const session = await response.json();
+            if (!session.token || !Number.isFinite(Date.parse(session.expires_at))) throw new Error("Invalid session response.");
+            s.session = session;
+            s.sessionExpiresAt = Math.min(Date.parse(session.expires_at), s.media.expires_at ? Date.parse(s.media.expires_at) : Infinity);
+            ui.session.textContent = `Expires ${new Date(s.sessionExpiresAt).toLocaleString()}`;
+            log("Playback session claimed. Credential stays in page memory.");
+          }
+          if (s.session && Date.now() >= s.sessionExpiresAt) throw new Error("Playback session has expired.");
+          if (!s.flacInspected) {
+            await inspectFlac(s);
+            s.flacInspected = true;
+          }
+          if (state !== s) return;
+          updateNote(s);
+          s.startupAt = performance.now();
+          s.firstPlay = false;
+          switchProfile(s, "aac", true);
+        } catch (error) {
+          if (state !== s) return;
+          if (s.active) destroyPlayer(s);
+          status(error.message === "Playback session has expired." ? error.message : "Could not start playback. Retry with Start playback.");
+          log("Playback start failed. A session claim retry keeps the same idempotency key.");
+        } finally {
+          if (state === s) {
+            s.busy = false;
+            setControls(s);
+          }
+        }
+      }
+
+      ui["media-form"].addEventListener("submit", async event => {
+        event.preventDefault();
+        const id = ui["media-id"].value.trim().toLowerCase();
+        if (!uuidPattern.test(id)) return status("Enter a valid media UUID.");
+        if (state?.media?.id === id) {
+          status("Media is already loaded. Use Start playback to retry or restart.");
+          return;
+        }
+        if (state) {
+          state.abort.abort();
+          destroyPlayer(state);
+        }
+        const s = { media: null, abort: new AbortController(), hls: null, engine: null, active: false, busy: true, switching: false, sourceGeneration: 0, session: null, claimKey: null, samples: 0, measuredAt: 0, throughput: NaN, flacEntries: [], flacInspected: false, flacNote: null, cooldownUntil: 0, manual: null, manualLevel: -2, manualChangedAt: 0, lastLevel: null, stableSince: null, lowBufferSince: null, waitingAt: null, pendingRestore: null, stalls: 0, startupSeconds: null, startupAt: 0, firstPlay: false, lastMetricsAt: 0, lastTime: 0, lastAdvanceAt: Date.now() };
+        state = s;
+        setControls(s);
+        status("Loading media…");
+        for (const id of ["engine", "current", "buffer", "bandwidth", "throughput", "dropped", "startup", "session"]) ui[id].textContent = "—";
+        ui.quality.replaceChildren(new Option("Auto", "auto"));
+        try {
+          const response = await request(new URL(`media/${id}`, apiRoot), { signal: s.abort.signal });
+          const media = await response.json();
+          if (!media.video?.variants?.length || !media.video.master_path) throw new Error("This media has no video outputs.");
+          if (media.id !== id) throw new Error("Unexpected media ID.");
+          serviceURL(media.video.master_path);
+          for (const variant of media.video.variants) serviceURL(variant.playlist_path);
+          for (const audio of media.video.audio) serviceURL(audio.content_path);
+          s.media = media;
+          if (window.Hls && Hls.version === "1.7.3" && Hls.isSupported()) s.engine = "hls.js";
+          else if (video.canPlayType("application/vnd.apple.mpegurl")) s.engine = "native HLS";
+          else throw new Error("This browser cannot play HLS.");
+          ui.engine.textContent = s.engine === "hls.js" ? "hls.js 1.7.3" : s.engine;
+          ui.session.textContent = media.single_use ? "Claimed when playback starts" : "Not required";
+          for (const variant of [...media.video.variants].sort((left, right) => left.resolution - right.resolution || left.fps - right.fps)) ui.quality.add(new Option(`${variant.resolution}p / ${variant.fps} fps`, variant.id));
+          status(`${media.file_name || "Video"} loaded. ${media.single_use ? "Start playback claims its single-use session." : "Ready to start playback."}`);
+          updateNote(s);
+          log(`Video loaded: ${media.video.variants.length} variants. ${media.single_use ? "Single-use session required." : "Ordinary media."}`);
+        } catch (error) {
+          s.media = null;
+          status(error.message === "This media has no video outputs." || error.message === "This browser cannot play HLS." ? error.message : "Could not load media. Check its ID and availability.");
+          log("Media load failed.");
+        } finally {
+          s.busy = false;
+          setControls(s);
+        }
+      });
+
+      ui.start.addEventListener("click", startPlayback);
+      ui.stop.addEventListener("click", () => stopPlayer(state, "Playback stopped. The current session stays in page memory."));
+      ui.clear.addEventListener("click", () => { eventLines.length = 0; ui.events.textContent = ""; });
+      ui.quality.addEventListener("change", () => {
+        const s = state;
+        if (!s) return;
+        s.manual = ui.quality.value === "auto" ? null : ui.quality.value;
+        const variant = s.media.video.variants.find(item => item.id === s.manual);
+        if (s.profile === "flac" && variant && !s.flacEntries.some(entry => entry.variant.id === variant.id)) fallback(s, "selected quality has no supported FLAC combination");
+        else applyQuality(s, true);
+        log(s.manual ? "Manual video quality selected; automatic video changes are paused." : "Automatic video quality selected.");
+      });
+      ui.lossless.addEventListener("change", () => {
+        const s = state;
+        if (!s) return;
+        if (!ui.lossless.checked) fallback(s, "lossless preference disabled");
+        log(ui.lossless.checked ? "Lossless preference enabled." : "Lossless preference disabled.");
+        setControls(s);
+      });
+      ui["native-flac"].addEventListener("click", () => {
+        const s = state;
+        if (s?.active && !s.switching && s.engine === "native HLS" && s.flacEntries.length && ui.lossless.checked && Date.now() >= s.cooldownUntil) switchProfile(s, "flac");
+      });
+
+      video.addEventListener("playing", () => {
+        const s = state;
+        if (!s?.active) return;
+        s.switching = false;
+        setControls(s);
+        s.stableSince ||= Date.now();
+        s.waitingAt = null;
+        s.lastTime = video.currentTime;
+        s.lastAdvanceAt = Date.now();
+        if (!s.firstPlay) {
+          s.firstPlay = true;
+          s.startupSeconds = (performance.now() - s.startupAt) / 1000;
+          log(`Startup: ${s.startupSeconds.toFixed(2)} seconds.`);
+        }
+        status(`Playing with ${playbackLabel(s)}.`);
+      });
+      video.addEventListener("pause", () => { if (state?.active && !state.switching) state.stableSince = null; });
+      video.addEventListener("seeking", () => { if (state?.active) { state.stableSince = null; state.waitingAt = null; } });
+      video.addEventListener("seeked", () => { if (state?.active && !video.paused) { state.stableSince = Date.now(); state.lastAdvanceAt = Date.now(); } });
+      video.addEventListener("waiting", () => {
+        const s = state;
+        if (!s?.active || s.switching || video.seeking || video.paused || !s.firstPlay) return;
+        if (!s.waitingAt) {
+          s.waitingAt = Date.now();
+          s.stalls++;
+          s.stableSince = null;
+          log(`Playback stall ${s.stalls}; buffer ${bufferAhead().toFixed(1)} seconds.`);
+        }
+        fallback(s, "playback stalled");
+      });
+      video.addEventListener("error", () => {
+        const s = state;
+        if (!s?.active) return;
+        log(`Video error code ${video.error?.code || 0}.`);
+        if (s.profile === "flac") fallback(s, "video decode or source error");
+        else stopPlayer(s, "Playback failed. Start playback to retry.");
+      });
+
+      setInterval(() => {
+        const s = state;
+        if (!s?.active) return;
+        const now = Date.now();
+        if (s.session && now >= s.sessionExpiresAt) {
+          stopPlayer(s, "Playback session has expired.");
+          ui.session.textContent = "Expired";
+          return;
+        }
+        const buffer = bufferAhead();
+        const estimate = measuredBandwidth(s);
+        const dropped = video.getVideoPlaybackQuality?.().droppedVideoFrames;
+        ui.buffer.textContent = `${buffer.toFixed(1)} seconds`;
+        ui.bandwidth.textContent = s.engine === "native HLS" ? "Not observable" : rate(estimate);
+        ui.throughput.textContent = s.engine === "native HLS" ? "Not observable" : rate(s.throughput);
+        ui.dropped.textContent = Number.isFinite(dropped) ? String(dropped) : "Not observable";
+        ui.startup.textContent = `${s.startupSeconds === null ? "Pending" : s.startupSeconds.toFixed(2) + "s"} / ${s.stalls}`;
+        if (s.engine === "native HLS") ui.current.textContent = `System quality / ${s.profile.toUpperCase()}`;
+        setControls(s);
+        if (s.switching || video.paused || video.seeking || video.ended || !s.firstPlay) return;
+        if (Math.abs(video.currentTime - s.lastTime) > 0.1) {
+          s.lastTime = video.currentTime;
+          s.lastAdvanceAt = now;
+          s.stableSince ||= now;
+        } else if (now - s.lastAdvanceAt > 2500 && !s.waitingAt) {
+          s.waitingAt = now;
+          s.stalls++;
+          s.stableSince = null;
+          log(`Playback stall ${s.stalls}; playhead stopped.`);
+          fallback(s, "playhead stopped");
+        }
+        if (now - s.lastMetricsAt >= 10000) {
+          s.lastMetricsAt = now;
+          log(`Buffer ${buffer.toFixed(1)}s; bandwidth ${s.engine === "native HLS" ? "not observable" : rate(estimate)}; dropped frames ${Number.isFinite(dropped) ? dropped : "not observable"}.`);
+        }
+        if (s.engine !== "hls.js") return;
+        if (s.profile === "flac") {
+          if (buffer < 5) s.lowBufferSince ||= now;
+          else s.lowBufferSince = null;
+          const minimum = Math.min(...s.flacEntries.map(entry => entry.bandwidth));
+          const nearEnd = Number.isFinite(video.duration) && video.duration - video.currentTime < 5;
+          if (!nearEnd && s.lowBufferSince && now - s.lowBufferSince >= 1000) fallback(s, "buffer below 5 seconds");
+          else if (Number.isFinite(estimate) && estimate < minimum * 1.2) fallback(s, "insufficient bandwidth");
+        } else if (ui.lossless.checked && s.flacEntries.length && now >= s.cooldownUntil && buffer >= 15 && s.stableSince && now - s.stableSince >= 30000 && Number.isFinite(estimate)) {
+          const variant = s.manual ? s.media.video.variants.find(item => item.id === s.manual) : variantForLevel(s.lastLevel, s);
+          const candidate = s.flacEntries.find(entry => entry.variant.id === variant?.id && estimate >= entry.bandwidth * 1.5);
+          if (candidate) {
+            log("Stable playback and measured bandwidth allow a FLAC trial.");
+            switchProfile(s, "flac", false, candidate.variant.id);
+          }
+        }
+        if (!s.switching) applyQuality(s);
+      }, 1000);
+
+      window.addEventListener("pagehide", () => {
+        if (!state) return;
+        state.abort.abort();
+        destroyPlayer(state);
+        state.session = null;
+      });
+
+      request(new URL("capabilities", apiRoot)).then(response => response.json()).then(capabilities => {
+        if (capabilities.media?.video === false) {
+          ui.capability.textContent = "New video processing is unavailable. Stored videos can still play.";
+          ui.capability.hidden = false;
+        }
+      }).catch(() => {});
+    })();
+  </script>
+</body>
+</html>

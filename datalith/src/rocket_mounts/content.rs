@@ -5,7 +5,8 @@ use std::{
 };
 
 use datalith_core::{
-    Content, ContentRequest, DatalithService, ServiceError, Uuid, chrono::DateTime,
+    Content, ContentRequest, DatalithService, HlsAsset, HlsAudioFilter, HlsPlaylist, ServiceError,
+    Uuid, chrono::DateTime,
 };
 use rocket::{
     Request, Response, State,
@@ -191,7 +192,7 @@ async fn response(
     response.raw_header("Content-Security-Policy", "sandbox");
     let mut start = 0;
     let mut length = size;
-    if !content.single_use {
+    if content.repeatable {
         response.raw_header("ETag", etag.clone()).raw_header("Accept-Ranges", "bytes");
         if headers.if_none_match.as_deref().is_some_and(|value| {
             value.split(',').any(|candidate| {
@@ -235,7 +236,7 @@ async fn response(
     Ok(ContentResponse(response.finalize()))
 }
 
-#[get("/media/<id>/content?<variant>&<multiplier>&<format>&<download>")]
+#[get("/media/<id>/content?<variant>&<multiplier>&<format>&<download>&<session>")]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn get_content(
     service: &State<DatalithService>,
@@ -244,10 +245,11 @@ pub(super) async fn get_content(
     multiplier: Option<u8>,
     format: Option<String>,
     download: Option<bool>,
+    session: Option<&str>,
     headers: DownloadHeaders,
 ) -> Result<ContentResponse, ApiError> {
     let content = service
-        .open_content(
+        .open_content_with_session(
             id,
             ContentRequest {
                 variant,
@@ -255,12 +257,13 @@ pub(super) async fn get_content(
                 format,
             },
             false,
+            session,
         )
         .await?;
     response(content, headers, download.unwrap_or(false), false).await
 }
 
-#[head("/media/<id>/content?<variant>&<multiplier>&<format>&<download>")]
+#[head("/media/<id>/content?<variant>&<multiplier>&<format>&<download>&<session>")]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn head_content(
     service: &State<DatalithService>,
@@ -269,10 +272,11 @@ pub(super) async fn head_content(
     multiplier: Option<u8>,
     format: Option<String>,
     download: Option<bool>,
+    session: Option<&str>,
     headers: DownloadHeaders,
 ) -> Result<ContentResponse, ApiError> {
     let content = service
-        .open_content(
+        .open_content_with_session(
             id,
             ContentRequest {
                 variant,
@@ -280,25 +284,140 @@ pub(super) async fn head_content(
                 format,
             },
             true,
+            session,
         )
         .await?;
     response(content, headers, download.unwrap_or(false), true).await
 }
 
-#[get("/tasks/<id>/artifact")]
+#[get("/tasks/<id>/artifact?<session>")]
 pub(super) async fn get_artifact(
     service: &State<DatalithService>,
     id: Uuid,
+    session: Option<&str>,
     headers: DownloadHeaders,
 ) -> Result<ContentResponse, ApiError> {
-    response(service.open_artifact(id).await?, headers, true, false).await
+    response(service.open_artifact_with_session(id, session).await?, headers, true, false).await
 }
 
-#[head("/tasks/<id>/artifact")]
+#[head("/tasks/<id>/artifact?<session>")]
 pub(super) async fn head_artifact(
     service: &State<DatalithService>,
     id: Uuid,
+    session: Option<&str>,
     headers: DownloadHeaders,
 ) -> Result<ContentResponse, ApiError> {
-    response(service.open_artifact(id).await?, headers, true, true).await
+    response(service.open_artifact_with_session(id, session).await?, headers, true, true).await
+}
+
+fn playlist_response(playlist: HlsPlaylist) -> ContentResponse {
+    let bytes = playlist.body.into_bytes();
+    let mut response = Response::build();
+    response
+        .raw_header("Content-Type", "application/vnd.apple.mpegurl")
+        .raw_header("X-Content-Type-Options", "nosniff")
+        .raw_header(
+            "Cache-Control",
+            if playlist.temporary { "no-store" } else { "public, max-age=0, must-revalidate" },
+        );
+    response.sized_body(bytes.len(), std::io::Cursor::new(bytes));
+    ContentResponse(response.finalize())
+}
+
+fn audio_filter(audio: Option<&str>) -> Result<HlsAudioFilter, ApiError> {
+    match audio.unwrap_or("aac") {
+        "aac" => Ok(HlsAudioFilter::Aac),
+        "all" => Ok(HlsAudioFilter::All),
+        "flac" => Ok(HlsAudioFilter::Flac),
+        _ => Err(ApiError::invalid("audio must be aac, all, or flac")),
+    }
+}
+
+#[get("/media/<id>/hls/master.m3u8?<audio>&<session>")]
+pub(super) async fn hls_master(
+    service: &State<DatalithService>,
+    id: Uuid,
+    audio: Option<&str>,
+    session: Option<&str>,
+) -> Result<ContentResponse, ApiError> {
+    Ok(playlist_response(service.hls_master(id, audio_filter(audio)?, session).await?))
+}
+
+#[head("/media/<id>/hls/master.m3u8?<audio>&<session>")]
+pub(super) async fn head_hls_master(
+    service: &State<DatalithService>,
+    id: Uuid,
+    audio: Option<&str>,
+    session: Option<&str>,
+) -> Result<ContentResponse, ApiError> {
+    hls_master(service, id, audio, session).await
+}
+
+#[get("/media/<id>/hls/<track>/index.m3u8?<session>")]
+pub(super) async fn hls_track(
+    service: &State<DatalithService>,
+    id: Uuid,
+    track: &str,
+    session: Option<&str>,
+) -> Result<ContentResponse, ApiError> {
+    Ok(playlist_response(service.hls_track(id, track, session).await?))
+}
+
+#[head("/media/<id>/hls/<track>/index.m3u8?<session>")]
+pub(super) async fn head_hls_track(
+    service: &State<DatalithService>,
+    id: Uuid,
+    track: &str,
+    session: Option<&str>,
+) -> Result<ContentResponse, ApiError> {
+    hls_track(service, id, track, session).await
+}
+
+fn asset_kind(name: &str) -> Result<HlsAsset, ApiError> {
+    if name == "init.mp4" {
+        return Ok(HlsAsset::Initialization);
+    }
+    let value = name
+        .strip_prefix("segment-")
+        .and_then(|value| value.strip_suffix(".m4s"))
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|value| value.parse().ok())
+        .ok_or(ServiceError::NotFound)?;
+    Ok(HlsAsset::Segment(value))
+}
+
+#[get("/media/<id>/hls/<track>/<name>?<session>", rank = 2)]
+pub(super) async fn hls_asset(
+    service: &State<DatalithService>,
+    id: Uuid,
+    track: &str,
+    name: &str,
+    session: Option<&str>,
+    headers: DownloadHeaders,
+) -> Result<ContentResponse, ApiError> {
+    response(
+        service.open_hls_content(id, track, asset_kind(name)?, session).await?,
+        headers,
+        false,
+        false,
+    )
+    .await
+}
+
+#[head("/media/<id>/hls/<track>/<name>?<session>", rank = 2)]
+pub(super) async fn head_hls_asset(
+    service: &State<DatalithService>,
+    id: Uuid,
+    track: &str,
+    name: &str,
+    session: Option<&str>,
+    headers: DownloadHeaders,
+) -> Result<ContentResponse, ApiError> {
+    response(
+        service.open_hls_content(id, track, asset_kind(name)?, session).await?,
+        headers,
+        false,
+        true,
+    )
+    .await
 }

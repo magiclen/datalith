@@ -1,9 +1,12 @@
 mod archive;
 #[cfg(feature = "av-convert")]
 mod av_processor;
+mod hls;
 #[cfg(feature = "image-convert")]
 mod image_processor;
 pub(crate) mod migration;
+mod mp4_export;
+mod sessions;
 mod store;
 #[cfg(feature = "image-convert")]
 mod svg;
@@ -42,8 +45,10 @@ pub struct Content {
     pub metadata:               MediaFile,
     /// The time when the content was created.
     pub created_at:             DateTime<Utc>,
-    /// Whether the content can be downloaded only once.
+    /// Whether this content belongs to single-use media.
     pub single_use:             bool,
+    /// Whether this opened content supports repeated reads and byte ranges.
+    pub repeatable:             bool,
     /// Whether the content expires, so it must not be cached.
     pub temporary:              bool,
     pub(super) _file_guard:     Option<OpenGuard>,
@@ -115,6 +120,8 @@ impl DatalithService {
         }));
         service.recover_tasks().await?;
         service.collect_garbage().await?;
+        service.expire_mp4_artifacts().await?;
+        service.expire_tasks().await?;
         service.clear_untracked_files().await?;
         store::sync_directory(service.0.datalith.get_environment()).await?;
         let mut workers = service.0.workers.lock().await;
@@ -142,15 +149,23 @@ impl DatalithService {
         let (audio, video) = (av && self.0.av.audio_available, av && self.0.av.video_available);
         #[cfg(not(feature = "av-convert"))]
         let (audio, video) = (av, av);
+        #[cfg(feature = "av-convert")]
+        let av_status = serde_json::json!({"available":av,"minimum_tool_major":9,"audio_encoder":audio,"video_encoder":video,"flac_encoder":av&&self.0.av.flac_available,"unavailable_reason":self.0.av.reason});
+        #[cfg(not(feature = "av-convert"))]
+        let av_status = serde_json::json!({"available":false,"minimum_tool_major":9,"audio_encoder":false,"video_encoder":false,"flac_encoder":false,"unavailable_reason":"audio and video processing are disabled"});
         serde_json::json!({
             "api_version": "1", "version": env!("CARGO_PKG_VERSION"),
             "media": {"resource": true, "image": cfg!(feature="image-convert"), "audio": audio, "video": video},
-            "image": {"engine": "image-convert", "animated_inputs": ["gif", "webp", "apng"], "outputs": ["webp", "png", "jpeg", "gif"], "apng_requires_ffmpeg": true, "apng_timing_precision_ms": 10, "limits": self.0.config.image_limits},
+            "image": {"engine": "image-convert", "animated_inputs": ["gif", "webp", "apng"], "outputs": ["webp", "png", "jpeg", "gif"], "apng_requires_ffmpeg": true, "apng_timing_precision_ms": 10, "limits": self.0.config.image_limits,"processing_modes":["transcode","trust"],"save_original_default":true},
+            "av":av_status,
+            "audio":{"engine":"ffmpeg","profiles":["m4a:aac-lc","flac"],"aac_sample_rate":48000,"aac_bitrates":[256000,128000],"mp3_fallback":false,"save_original_default":false,"processing_modes":["transcode","trust"],"selected_audio_streams":1},
+            "video":{"engine":"ffmpeg","codec":"h264","pixel_format":"yuv420p","delivery":"hls-fmp4","requires_variants":true,"resolution_tiers":[144,240,360,432,480,540,576,720,900,1080,1440,2160],"frame_rate_tiers":[10,12,15,20,24,25,30,48,50,60],"bitrate":self.0.config.av.bitrate,"bitrate_unit":"bits_per_second","save_original_default":false,"processing_modes":["transcode","trust"],"mp4_export":av},
+            "playback_sessions":{"seconds":self.0.config.playback_session_seconds,"single_use_semantics":"one_claim"},
+            "mp4_export_retention_seconds":self.0.config.mp4_export_retention_seconds,
             "max_file_size": self.0.config.max_file_size.to_string(),
             "task_retention_seconds": self.0.config.task_retention_seconds,
             "task_notifications": ["polling"], "cancellation": "safe_points",
-            "archive_version": 1, "export_pauses_writes": true,
-            "future_profiles": {"audio": ["m4a:aac-lc", "flac"], "video": ["hls:h264-x264+aac-lc"]}
+            "archive_version": 2, "export_pauses_writes": true
         })
     }
 

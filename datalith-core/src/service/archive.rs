@@ -17,7 +17,7 @@ use sqlx::{QueryBuilder, Row, Sqlite};
 use uuid::Uuid;
 
 use super::{
-    DatalithService, ExportOptions, Media, MediaFile, PreparedFile, ServiceError,
+    DatalithService, ExportOptions, HlsInventory, Media, MediaFile, PreparedFile, ServiceError,
     migration::content_path,
 };
 use crate::{PATH_FILE_DIRECTORY, guard::OpenGuard};
@@ -32,6 +32,8 @@ struct Manifest {
     archive_id: Uuid,
     created_at: DateTime<Utc>,
     media:      Vec<Media>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    hls:        BTreeMap<Uuid, HlsInventory>,
     files:      Vec<ArchiveFile>,
 }
 
@@ -96,12 +98,18 @@ impl DatalithService {
         }
         media.sort_unstable_by_key(|item| item.id);
         let media_count = media.len();
+        let mut hls = BTreeMap::new();
+        for item in &media {
+            if item.video.is_some() {
+                hls.insert(item.id, self.hls_inventory(item.id).await?);
+            }
+        }
         let mut contents = BTreeMap::<String, (u64, PathBuf)>::new();
         let mut guards = Vec::new();
         let mut files = HashMap::new();
         let mut hashes = HashSet::new();
         for item in &media {
-            for file in media_files(item) {
+            for file in media_files(item, hls.get(&item.id)) {
                 if !hashes.insert(file.sha256.clone()) {
                     continue;
                 }
@@ -138,10 +146,11 @@ impl DatalithService {
         }
         drop(mutation);
         let manifest = Manifest {
-            version: 1,
+            version: 2,
             archive_id: task_id,
             created_at: now,
             media,
+            hls,
             files: contents
                 .iter()
                 .map(|(hash, (size, _))| ArchiveFile {
@@ -178,7 +187,7 @@ impl DatalithService {
         let directory = self.work_directory(task_id);
         let max_size = self.0.config.max_file_size;
         let worker_cancel = cancel.clone();
-        let archive = tokio::task::spawn_blocking(move || {
+        let mut archive = tokio::task::spawn_blocking(move || {
             validate_archive(&directory, max_size, &worker_cancel)
         })
         .await
@@ -206,7 +215,7 @@ impl DatalithService {
         }
         let mut prepared = HashMap::new();
         for media in &archive.manifest.media {
-            for file in media_files(media) {
+            for file in media_files(media, archive.manifest.hls.get(&media.id)) {
                 prepared.entry(file.id).or_insert_with(|| PreparedFile {
                     path:     archive.directory.path().join(&file.sha256),
                     metadata: file.clone(),
@@ -223,6 +232,7 @@ impl DatalithService {
         for mut media in archive.manifest.media {
             check_cancelled(&cancel)?;
             let old_id = media.id;
+            let mut inventory = archive.manifest.hls.remove(&old_id);
             if media.consumed_at.is_some() || media.expires_at.is_some_and(|expiry| expiry <= now) {
                 skipped += 1;
                 continue;
@@ -234,43 +244,53 @@ impl DatalithService {
                     .await?;
             if let Some(existing) = existing {
                 let existing: Media = serde_json::from_str(&existing)?;
-                if equivalent_media(&existing, &media)? {
+                let existing_inventory: Option<String> =
+                    sqlx::query_scalar("SELECT inventory FROM media_hls WHERE media_id=?")
+                        .bind(existing.id)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                let existing_inventory = existing_inventory
+                    .map(|value| serde_json::from_str::<HlsInventory>(&value))
+                    .transpose()?;
+                if equivalent_media(
+                    &existing,
+                    &media,
+                    existing_inventory.as_ref(),
+                    inventory.as_ref(),
+                )? {
                     id_map.insert(old_id.to_string(), existing.id.to_string());
-                    if let (Some(source), Some(target)) = (&media.original, &existing.original) {
+                    let targets: HashMap<_, _> =
+                        super::file_references(&existing, existing_inventory.as_ref())
+                            .into_iter()
+                            .collect();
+                    for (role, source) in super::file_references(&media, inventory.as_ref()) {
+                        let target = targets
+                            .get(&role)
+                            .ok_or_else(|| archive_error("equivalent media has different roles"))?;
                         let mapped = *resolved_files.entry(source.id).or_insert(target.id);
                         file_id_map.insert(source.id.to_string(), mapped.to_string());
-                    }
-                    for source in &media.variants {
-                        if let Some(target) = existing.variants.iter().find(|target| {
-                            target.name == source.name
-                                && target.multiplier == source.multiplier
-                                && target.format == source.format
-                        }) {
-                            let mapped =
-                                *resolved_files.entry(source.file.id).or_insert(target.file.id);
-                            file_id_map.insert(source.file.id.to_string(), mapped.to_string());
-                        }
                     }
                     skipped += 1;
                     continue;
                 }
                 media.id = Uuid::new_v4();
             }
-            let source_ids = media_files(&media).map(|file| file.id).collect::<Vec<_>>();
-            for variant in &mut media.variants {
-                variant.content_path =
-                    content_path(media.id, &variant.name, variant.multiplier, &variant.format);
-            }
+            let source_ids =
+                media_files(&media, inventory.as_ref()).map(|file| file.id).collect::<Vec<_>>();
+            refresh_paths(&mut media);
             self.publish_import_media_tx(
                 &mut tx,
                 &mut media,
-                None,
+                inventory.as_mut(),
                 &prepared,
                 &mut guards,
                 &mut resolved_files,
             )
             .await?;
-            for (old, new) in source_ids.into_iter().zip(media_files(&media).map(|file| file.id)) {
+            for (old, new) in source_ids
+                .into_iter()
+                .zip(media_files(&media, inventory.as_ref()).map(|file| file.id))
+            {
                 file_id_map.insert(old.to_string(), new.to_string());
             }
             id_map.insert(old_id.to_string(), media.id.to_string());
@@ -291,8 +311,11 @@ impl DatalithService {
     }
 }
 
-fn media_files(media: &Media) -> impl Iterator<Item = &MediaFile> {
-    super::file_references(media, None).into_iter().map(|(_, file)| file)
+fn media_files<'a>(
+    media: &'a Media,
+    inventory: Option<&'a HlsInventory>,
+) -> impl Iterator<Item = &'a MediaFile> {
+    super::file_references(media, inventory).into_iter().map(|(_, file)| file)
 }
 
 fn check_cancelled(cancel: &AtomicBool) -> Result<(), ServiceError> {
@@ -469,7 +492,7 @@ fn validate_archive_inner(
             }
             let decoded: Manifest = serde_json::from_reader(&mut entry)
                 .map_err(|_| archive_error("invalid archive manifest JSON"))?;
-            if decoded.version != 1 {
+            if !matches!(decoded.version, 1 | 2) {
                 return Err(ServiceError::Unsupported("unsupported archive version".into()));
             }
             for file in &decoded.files {
@@ -531,17 +554,23 @@ fn validate_manifest(
     let mut ids = HashSet::new();
     let mut referenced = HashSet::new();
     let mut file_ids = HashMap::<Uuid, (&str, u64)>::new();
+    if manifest.version == 1 && !manifest.hls.is_empty() {
+        return Err(archive_error("version 1 archives cannot contain HLS inventories"));
+    }
     for media in &manifest.media {
-        if media.audio.is_some()
-            || media.video.is_some()
-            || matches!(media.kind, super::MediaKind::Audio | super::MediaKind::Video)
+        let inventory = manifest.hls.get(&media.id);
+        super::validate_assets(media, inventory)?;
+        if manifest.version == 1
+            && (media.audio.is_some()
+                || media.video.is_some()
+                || matches!(media.kind, super::MediaKind::Audio | super::MediaKind::Video))
         {
             return Err(archive_error("version 1 archives cannot contain audio or video outputs"));
         }
         if !ids.insert(media.id) {
             return Err(archive_error("duplicate media ID"));
         }
-        if media.original.is_none() && media.variants.is_empty() {
+        if media_files(media, inventory).next().is_none() {
             return Err(archive_error("media has no files"));
         }
         if media.file_name.chars().any(char::is_control) {
@@ -572,7 +601,7 @@ fn validate_manifest(
                 return Err(archive_error("invalid or duplicate media variant"));
             }
         }
-        for file in media_files(media) {
+        for file in media_files(media, inventory) {
             let size = parse_size(&file.file_size)?;
             if file.file_name.chars().any(char::is_control)
                 || file.file_type.parse::<mime::Mime>().is_err()
@@ -594,18 +623,41 @@ fn validate_manifest(
     if referenced.len() != declared.len() {
         return Err(archive_error("archive contains unreferenced file content"));
     }
+    if manifest.hls.keys().any(|id| !ids.contains(id)) {
+        return Err(archive_error("HLS inventory has no matching media"));
+    }
     Ok(())
 }
 
-fn equivalent_media(left: &Media, right: &Media) -> Result<bool, ServiceError> {
-    fn normalized(media: &Media) -> Result<Value, ServiceError> {
+fn equivalent_media(
+    left: &Media,
+    right: &Media,
+    left_inventory: Option<&HlsInventory>,
+    right_inventory: Option<&HlsInventory>,
+) -> Result<bool, ServiceError> {
+    fn normalized(media: &Media, inventory: Option<&HlsInventory>) -> Result<Value, ServiceError> {
         let mut media = media.clone();
-        for file in super::files_mut(&mut media, None) {
+        let mut inventory = inventory.cloned();
+        for file in super::files_mut(&mut media, inventory.as_mut()) {
             file.id = Uuid::nil();
         }
         for variant in &mut media.variants {
             variant.file.id = Uuid::nil();
             variant.content_path.clear();
+        }
+        if let Some(audio) = &mut media.audio {
+            for variant in &mut audio.variants {
+                variant.content_path.clear();
+            }
+        }
+        if let Some(video) = &mut media.video {
+            video.master_path.clear();
+            for variant in &mut video.variants {
+                variant.playlist_path.clear();
+            }
+            for audio in &mut video.audio {
+                audio.content_path.clear();
+            }
         }
         media.variants.sort_by(|left, right| {
             (&left.name, left.multiplier, &left.format).cmp(&(
@@ -614,7 +666,33 @@ fn equivalent_media(left: &Media, right: &Media) -> Result<bool, ServiceError> {
                 &right.format,
             ))
         });
-        Ok(serde_json::to_value(media)?)
+        Ok(serde_json::json!({"media":media,"hls":inventory}))
     }
-    Ok(normalized(left)? == normalized(right)?)
+    Ok(normalized(left, left_inventory)? == normalized(right, right_inventory)?)
+}
+
+fn refresh_paths(media: &mut Media) {
+    for variant in &mut media.variants {
+        variant.content_path =
+            content_path(media.id, &variant.name, variant.multiplier, &variant.format);
+    }
+    if let Some(audio) = &mut media.audio {
+        for variant in &mut audio.variants {
+            variant.content_path = format!(
+                "api/v1/media/{}/content?format={}",
+                media.id,
+                if variant.codec == "flac" { "flac" } else { "m4a" }
+            );
+        }
+    }
+    if let Some(video) = &mut media.video {
+        video.master_path = format!("api/v1/media/{}/hls/master.m3u8", media.id);
+        for variant in &mut video.variants {
+            variant.playlist_path =
+                format!("api/v1/media/{}/hls/{}/index.m3u8", media.id, variant.id);
+        }
+        for audio in &mut video.audio {
+            audio.content_path = format!("api/v1/media/{}/hls/{}/index.m3u8", media.id, audio.id);
+        }
+    }
 }
