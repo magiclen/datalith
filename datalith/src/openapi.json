@@ -3,7 +3,7 @@
   "info": {
     "title": "Datalith API",
     "version": "1.0.0",
-    "description": "A media store that runs as one instance, with file contents on disk and metadata in SQLite. IDs are UUID strings. Dates are UTC RFC 3339 strings. File sizes and page totals are decimal strings. A trusted backend or reverse proxy must handle authentication. This release does not include audio or video conversion or a new Node.js client.",
+    "description": "A media store that runs as one instance, with file contents on disk and metadata and durable tasks in SQLite. Images have WebP outputs, standalone audio has AAC in M4A and optional FLAC, and video uses H.264 HLS with shared audio tracks. IDs are UUID strings, dates are UTC RFC 3339 strings, and file sizes and page totals are decimal strings. A trusted backend or reverse proxy must handle authentication. Formal client libraries are separate projects.",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -105,7 +105,7 @@
             }
           }
         },
-        "description": "The service saves the upload and task before it responds. It does not wait for image conversion. Without options, it creates a permanent resource. The upload is streamed to disk."
+        "description": "The service saves the upload and task before responding and does not wait for media conversion. The upload streams to disk. Without options it creates a permanent resource. Image originals are saved by default; audio and video originals are not. Video requests must specify nonempty resolution and fps pairs."
       }
     },
     "/tasks/{id}": {
@@ -229,7 +229,18 @@
           "503": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for an MP4 task created from single-use video, using the same still-valid playback credential. Other tasks do not require it."
+          }
+        ],
+        "description": "MP4 tasks from single-use video require their active session credential even when the same task is requested again."
       }
     },
     "/tasks/{id}/retry": {
@@ -291,7 +302,18 @@
           "503": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for an MP4 task created from single-use video, using the same still-valid playback credential. Other tasks do not require it."
+          }
+        ],
+        "description": "MP4 tasks from single-use video require their active session credential even when the same task is requested again."
       }
     },
     "/media": {
@@ -484,10 +506,10 @@
       ],
       "post": {
         "operationId": "processMedia",
-        "summary": "Create an image task from a saved original",
+        "summary": "Create media from a retained original",
         "responses": {
           "202": {
-            "description": "Create an image task from a saved original",
+            "description": "Create media from a retained original",
             "headers": {
               "X-Request-Id": {
                 "schema": {
@@ -553,7 +575,7 @@
             }
           }
         },
-        "description": "The original file must be available. A single-use source returns 409. The result keeps the source expiry time and is not saved if that time has passed."
+        "description": "Create new image, audio, or video media from a retained original without changing the source. The original must exist. Single-use sources return 409. The result keeps the source expiry and is not published after it has expired. The same idempotency key, source ID, and options return the existing task even after the source is deleted or expires."
       }
     },
     "/exports": {
@@ -628,7 +650,7 @@
             }
           }
         },
-        "description": "Export pauses content writes, file cleanup, and single-use downloads. Normal downloads continue. The archive contains a versioned manifest and one copy of each file content."
+        "description": "Export pauses content writes, file cleanup, and single-use claims while normal downloads continue. Archive version 2 contains a manifest, complete HLS inventory, and one copy of each unique file content, including originals, image and standalone audio outputs, and HLS initialization files and segments. Sessions, task history, settings, and temporary MP4 artifacts are not transferred."
       }
     },
     "/imports": {
@@ -712,7 +734,7 @@
             }
           }
         },
-        "description": "Import keeps IDs where possible and skips matching items. An ID used by different data is replaced with a new ID. The result includes the old-to-new ID maps. Importing the same archive again does not create duplicates."
+        "description": "Import keeps IDs where possible and skips matching items. An ID used by different data is replaced with a new ID. The result includes the old-to-new ID maps. Importing the same archive again does not create duplicates. Version 2 archives include audio and HLS contents; version 1 archives remain supported."
       }
     },
     "/media/{id}/content": {
@@ -745,7 +767,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+                "description": "Strong SHA-256 ETag. Resource and image single-use downloads omit it."
               },
               "Last-Modified": {
                 "schema": {
@@ -763,7 +785,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "The value is bytes. Single-use content does not send this header."
+                "description": "bytes for ordinary or authorized session content. Resource and image single-use downloads omit it."
               },
               "Content-Disposition": {
                 "schema": {
@@ -823,7 +845,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+                "description": "Strong SHA-256 ETag. Resource and image single-use downloads omit it."
               },
               "Last-Modified": {
                 "schema": {
@@ -841,7 +863,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "The value is bytes. Single-use content does not send this header."
+                "description": "bytes for ordinary or authorized session content. Resource and image single-use downloads omit it."
               },
               "Content-Disposition": {
                 "schema": {
@@ -877,7 +899,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+                "description": "Strong SHA-256 ETag. Resource and image single-use downloads omit it."
               },
               "Last-Modified": {
                 "schema": {
@@ -895,7 +917,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "The value is bytes. Single-use content does not send this header."
+                "description": "bytes for ordinary or authorized session content. Resource and image single-use downloads omit it."
               },
               "Content-Disposition": {
                 "schema": {
@@ -956,7 +978,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "An image variant name. Use original for the saved source file, or leave this out for the default variant."
+            "description": "Image recipe name or standalone audio identifier. Use original for the retained source; otherwise leave it out for the default available output."
           },
           {
             "name": "multiplier",
@@ -965,7 +987,8 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 255
-            }
+            },
+            "description": "Image scale, default 1. Standalone audio accepts only 1."
           },
           {
             "name": "format",
@@ -976,9 +999,13 @@
                 "webp",
                 "png",
                 "jpeg",
-                "gif"
+                "gif",
+                "m4a",
+                "aac",
+                "flac"
               ]
-            }
+            },
+            "description": "Image format or standalone audio format. m4a and aac select AAC in M4A."
           },
           {
             "name": "download",
@@ -987,9 +1014,18 @@
               "type": "boolean",
               "default": false
             }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for single-use audio/video and retained originals after claiming a playback session."
           }
         ],
-        "description": "HEAD does not use a download claim and ignores Range. GET claims a single-use download before sending the full file. Only one request can claim it. It ignores cache conditions and Range. An interrupted download does not restore the claim. The service checks that content exists before it checks cache conditions."
+        "description": "Read a resource, image output, standalone audio output, or retained original. Video playback uses HLS routes. Resource and image single-use GET claims the full file and ignores Range and cache conditions; HEAD does not claim it. Single-use audio/video require an already claimed session token and support repeated reads and byte ranges during that session. HEAD ignores Range. Content is checked before cache conditions."
       },
       "head": {
         "operationId": "headContent",
@@ -1009,7 +1045,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+                "description": "Strong SHA-256 ETag. Resource and image single-use downloads omit it."
               },
               "Last-Modified": {
                 "schema": {
@@ -1027,7 +1063,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "The value is bytes. Single-use content does not send this header."
+                "description": "bytes for ordinary or authorized session content. Resource and image single-use downloads omit it."
               },
               "Content-Disposition": {
                 "schema": {
@@ -1065,52 +1101,6 @@
           "503": {
             "$ref": "#/components/responses/Error"
           },
-          "206": {
-            "description": "Requested byte range",
-            "headers": {
-              "X-Request-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Request ID created by the server."
-              },
-              "ETag": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
-              },
-              "Last-Modified": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "Content creation time in HTTP date format."
-              },
-              "Cache-Control": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "Expiring and single-use content use no-store."
-              },
-              "Accept-Ranges": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "The value is bytes. Single-use content does not send this header."
-              },
-              "Content-Disposition": {
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "Content-Range": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
           "304": {
             "description": "The stored content matches the cache condition",
             "headers": {
@@ -1125,7 +1115,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+                "description": "Strong SHA-256 ETag. Resource and image single-use downloads omit it."
               },
               "Last-Modified": {
                 "schema": {
@@ -1143,7 +1133,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "The value is bytes. Single-use content does not send this header."
+                "description": "bytes for ordinary or authorized session content. Resource and image single-use downloads omit it."
               },
               "Content-Disposition": {
                 "schema": {
@@ -1153,23 +1143,6 @@
               "Content-Range": {
                 "schema": {
                   "type": "string"
-                }
-              }
-            }
-          },
-          "416": {
-            "description": "The requested range is outside the file",
-            "headers": {
-              "Content-Range": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -1204,7 +1177,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "An image variant name. Use original for the saved source file, or leave this out for the default variant."
+            "description": "Image recipe name or standalone audio identifier. Use original for the retained source; otherwise leave it out for the default available output."
           },
           {
             "name": "multiplier",
@@ -1213,7 +1186,8 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 255
-            }
+            },
+            "description": "Image scale, default 1. Standalone audio accepts only 1."
           },
           {
             "name": "format",
@@ -1224,9 +1198,13 @@
                 "webp",
                 "png",
                 "jpeg",
-                "gif"
+                "gif",
+                "m4a",
+                "aac",
+                "flac"
               ]
-            }
+            },
+            "description": "Image format or standalone audio format. m4a and aac select AAC in M4A."
           },
           {
             "name": "download",
@@ -1235,9 +1213,18 @@
               "type": "boolean",
               "default": false
             }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for single-use audio/video and retained originals after claiming a playback session."
           }
         ],
-        "description": "HEAD does not use a download claim and ignores Range. GET claims a single-use download before sending the full file. Only one request can claim it. It ignores cache conditions and Range. An interrupted download does not restore the claim. The service checks that content exists before it checks cache conditions."
+        "description": "Read a resource, image output, standalone audio output, or retained original. Video playback uses HLS routes. Resource and image single-use GET claims the full file and ignores Range and cache conditions; HEAD does not claim it. Single-use audio/video require an already claimed session token and support repeated reads and byte ranges during that session. HEAD ignores Range. Content is checked before cache conditions."
       }
     },
     "/tasks/{id}/artifact": {
@@ -1254,7 +1241,7 @@
       ],
       "get": {
         "operationId": "getArtifact",
-        "summary": "Download an exported archive",
+        "summary": "Download a completed TAR or MP4 export",
         "responses": {
           "200": {
             "description": "Full content",
@@ -1270,7 +1257,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+                "description": "Strong SHA-256 ETag for the artifact."
               },
               "Last-Modified": {
                 "schema": {
@@ -1288,7 +1275,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "The value is bytes. Single-use content does not send this header."
+                "description": "bytes for an authorized artifact."
               },
               "Content-Disposition": {
                 "schema": {
@@ -1348,7 +1335,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+                "description": "Strong SHA-256 ETag for the artifact."
               },
               "Last-Modified": {
                 "schema": {
@@ -1366,7 +1353,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "The value is bytes. Single-use content does not send this header."
+                "description": "bytes for an authorized artifact."
               },
               "Content-Disposition": {
                 "schema": {
@@ -1402,7 +1389,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+                "description": "Strong SHA-256 ETag for the artifact."
               },
               "Last-Modified": {
                 "schema": {
@@ -1420,7 +1407,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "The value is bytes. Single-use content does not send this header."
+                "description": "bytes for an authorized artifact."
               },
               "Content-Disposition": {
                 "schema": {
@@ -1474,13 +1461,21 @@
               "type": "string"
             },
             "description": "One byte range. It may have a start and end, only a start, or a suffix length to read from the end."
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for an MP4 artifact originating from single-use media."
           }
         ],
-        "description": "HEAD does not use a download claim and ignores Range. GET claims a single-use download before sending the full file. Only one request can claim it. It ignores cache conditions and Range. An interrupted download does not restore the claim. The service checks that content exists before it checks cache conditions."
+        "description": "Read the artifact of a successful export task. MP4 exports expire separately from task-history retention, after 24 hours by default; the task record remains at least until artifact expiry. Single-use MP4 exports require the same still-valid playback session and media. Normal MP4 exports use an input snapshot and can complete after source deletion, while source expiry remains applicable. HEAD ignores Range. Completed artifact reads remain available without av-convert or FFmpeg processing tools."
       },
       "head": {
         "operationId": "headArtifact",
-        "summary": "Download an exported archive",
+        "summary": "Read completed export headers",
         "responses": {
           "200": {
             "description": "Full content",
@@ -1496,7 +1491,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+                "description": "Strong SHA-256 ETag for the artifact."
               },
               "Last-Modified": {
                 "schema": {
@@ -1514,7 +1509,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "The value is bytes. Single-use content does not send this header."
+                "description": "bytes for an authorized artifact."
               },
               "Content-Disposition": {
                 "schema": {
@@ -1552,52 +1547,6 @@
           "503": {
             "$ref": "#/components/responses/Error"
           },
-          "206": {
-            "description": "Requested byte range",
-            "headers": {
-              "X-Request-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Request ID created by the server."
-              },
-              "ETag": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
-              },
-              "Last-Modified": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "Content creation time in HTTP date format."
-              },
-              "Cache-Control": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "Expiring and single-use content use no-store."
-              },
-              "Accept-Ranges": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "The value is bytes. Single-use content does not send this header."
-              },
-              "Content-Disposition": {
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "Content-Range": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
           "304": {
             "description": "The stored content matches the cache condition",
             "headers": {
@@ -1612,7 +1561,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "A strong ETag based on the content SHA-256 hash. Single-use content has no ETag."
+                "description": "Strong SHA-256 ETag for the artifact."
               },
               "Last-Modified": {
                 "schema": {
@@ -1630,7 +1579,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "The value is bytes. Single-use content does not send this header."
+                "description": "bytes for an authorized artifact."
               },
               "Content-Disposition": {
                 "schema": {
@@ -1640,23 +1589,6 @@
               "Content-Range": {
                 "schema": {
                   "type": "string"
-                }
-              }
-            }
-          },
-          "416": {
-            "description": "The requested range is outside the file",
-            "headers": {
-              "Content-Range": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -1684,18 +1616,26 @@
               "type": "string"
             },
             "description": "One byte range. It may have a start and end, only a start, or a suffix length to read from the end."
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for an MP4 artifact originating from single-use media."
           }
         ],
-        "description": "HEAD does not use a download claim and ignores Range. GET claims a single-use download before sending the full file. Only one request can claim it. It ignores cache conditions and Range. An interrupted download does not restore the claim. The service checks that content exists before it checks cache conditions."
+        "description": "Read the artifact of a successful export task. MP4 exports expire separately from task-history retention, after 24 hours by default; the task record remains at least until artifact expiry. Single-use MP4 exports require the same still-valid playback session and media. Normal MP4 exports use an input snapshot and can complete after source deletion, while source expiry remains applicable. HEAD ignores Range. Completed artifact reads remain available without av-convert or FFmpeg processing tools."
       }
     },
     "/capabilities": {
       "get": {
         "operationId": "getCapabilities",
-        "summary": "Read supported media types, limits, and planned output formats",
+        "summary": "Read processing availability, profiles, and limits",
         "responses": {
           "200": {
-            "description": "Read supported media types, limits, and planned output formats",
+            "description": "Compiled features, installed tool availability, output profile names, and configured limits.",
             "headers": {
               "X-Request-Id": {
                 "schema": {
@@ -1737,7 +1677,8 @@
           "503": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "description": "Use media.audio and media.video for new upload and reprocessing availability. The av object separates external tool discovery from AAC, H.264, and FLAC encoder availability and reports the minimum tool major version and discovery failure reason. video.mp4_export follows usable tool availability and can be true without an H.264 encoder. Existing media, sessions, and completed artifact reads remain available without processing tools."
       }
     },
     "/openapi.json": {
@@ -1756,6 +1697,1344 @@
             }
           }
         }
+      }
+    },
+    "/media/{id}/playback-sessions": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "claimPlaybackSession",
+        "summary": "Claim single-use audio or video playback",
+        "description": "Claim one fixed playback session and return its secret token. Read metadata before claiming because ordinary metadata reads and lists hide consumed media. The same idempotency key retries the original session. The token permits repeated content, original, HLS, and MP4 requests until fixed expiry, at most the media expiry. Deleting media invalidates it. Ordinary media do not require a session. The first reply and idempotent retries use the same millisecond-precision expiry.",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "An ASCII key stored with the task for seven days by default. The same key and input return the existing task. Different input with the same key returns 409."
+          }
+        ],
+        "responses": {
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "201": {
+            "description": "The claimed playback session.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "no-store for the secret session response."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybackSession"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/media/{id}/mp4-exports": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "exportMp4",
+        "summary": "Remux an existing video version into MP4",
+        "description": "Select an existing video identifier and the best allowed available audio in order FLAC, higher AAC, then lower AAC. A source with no audio produces video-only MP4. Existing compressed streams are copied and faststart is written; no stream is re-encoded. The task has kind mp4_export. New remuxing requires av-convert and usable FFmpeg and ffprobe version 9 or later; existing HLS, audio, sessions, and completed artifacts remain readable without that processing capability.",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "An ASCII key stored with the task for seven days by default. The same key and input return the existing task. Different input with the same key returns 409."
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for single-use audio/video. Ordinary media need no token."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Mp4ExportOptions"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "202": {
+            "description": "The queued MP4 export task.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/media/{id}/hls/master.m3u8": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getHlsMaster",
+        "summary": "Read the HLS master playlist",
+        "description": "Return allowed video/audio combinations with measured bandwidth values. Default AAC combinations support broad playback; clients must check FLAC support before selecting it. Video and audio combinations reuse stored tracks. Playlist child requests retain the session credential when required. Child URLs are relative to the master, such as aac_low/index.m3u8. Only authorized single-use media append the session token; ordinary playlists do not echo supplied tokens.",
+        "parameters": [
+          {
+            "name": "audio",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "aac",
+                "all",
+                "flac"
+              ],
+              "default": "aac"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for single-use audio/video. Ordinary media need no token."
+          }
+        ],
+        "responses": {
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "200": {
+            "description": "HLS VOD playlist.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Session-authorized or expiring media use no-store."
+              }
+            },
+            "content": {
+              "application/vnd.apple.mpegurl": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "headHlsMaster",
+        "summary": "Read the HLS master playlist headers",
+        "description": "Return allowed video/audio combinations with measured bandwidth values. Default AAC combinations support broad playback; clients must check FLAC support before selecting it. Video and audio combinations reuse stored tracks. Playlist child requests retain the session credential when required. Child URLs are relative to the master, such as aac_low/index.m3u8. Only authorized single-use media append the session token; ordinary playlists do not echo supplied tokens.",
+        "parameters": [
+          {
+            "name": "audio",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "aac",
+                "all",
+                "flac"
+              ],
+              "default": "aac"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for single-use audio/video. Ordinary media need no token."
+          }
+        ],
+        "responses": {
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "200": {
+            "description": "HLS VOD playlist.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Session-authorized or expiring media use no-store."
+              }
+            }
+          }
+        }
+      }
+    },
+    "/media/{id}/hls/{track}/index.m3u8": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "track",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "description": "An identifier from the video variants or shared audio summary."
+        }
+      ],
+      "get": {
+        "operationId": "getHlsTrack",
+        "summary": "Read one HLS track playlist",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for single-use audio/video. Ordinary media need no token."
+          }
+        ],
+        "responses": {
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "200": {
+            "description": "HLS VOD playlist.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Session-authorized or expiring media use no-store."
+              }
+            },
+            "content": {
+              "application/vnd.apple.mpegurl": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "description": "Read a video or shared audio track playlist. Child URLs are relative to this track, such as init.mp4 and segment-000000.m4s. Protected playlists append the same authorized session token to child URLs. Existing HLS remains readable without av-convert or processing tools."
+      },
+      "head": {
+        "operationId": "headHlsTrack",
+        "summary": "Read one HLS track playlist headers",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for single-use audio/video. Ordinary media need no token."
+          }
+        ],
+        "responses": {
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "200": {
+            "description": "HLS VOD playlist.",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Session-authorized or expiring media use no-store."
+              }
+            }
+          }
+        },
+        "description": "Read a video or shared audio track playlist. Child URLs are relative to this track, such as init.mp4 and segment-000000.m4s. Protected playlists append the same authorized session token to child URLs. Existing HLS remains readable without av-convert or processing tools."
+      }
+    },
+    "/player": {
+      "get": {
+        "operationId": "getPlayerExample",
+        "summary": "Open the minimal browser playback example",
+        "description": "A same-origin browser example for HLS playback, adaptive video selection, and supported AAC/FLAC choices. It is not a formal client SDK.",
+        "responses": {
+          "200": {
+            "description": "Browser example page.",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/media/{id}/hls/{track}/init.mp4": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "track",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "description": "An identifier from the video variants or shared audio summary."
+        }
+      ],
+      "get": {
+        "operationId": "getHlsInitialization",
+        "summary": "Read an HLS initialization file",
+        "responses": {
+          "200": {
+            "description": "Full content",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Strong SHA-256 ETag for the stored asset."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "bytes, including session-authorized playback."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "video/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "206": {
+            "description": "Requested byte range",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Strong SHA-256 ETag for the stored asset."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "bytes, including session-authorized playback."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "video/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The stored content matches the cache condition",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Strong SHA-256 ETag for the stored asset."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "bytes, including session-authorized playback."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "416": {
+            "description": "The requested range is outside the file",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            },
+            "description": "One byte range. It may have a start and end, only a start, or a suffix length to read from the end."
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for single-use audio/video, using its already claimed active playback token. Ordinary media need no token."
+          }
+        ],
+        "description": "Open a published HLS track asset. GET supports one byte range and cache conditions after authorization; HEAD ignores Range. Single-use playback supports repeated reads with the same token and uses no-store. These reads remain available without audio/video processing tools."
+      },
+      "head": {
+        "operationId": "headHlsInitialization",
+        "summary": "Read headers for an HLS initialization file",
+        "responses": {
+          "200": {
+            "description": "Full content",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Strong SHA-256 ETag for the stored asset."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "bytes, including session-authorized playback."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "304": {
+            "description": "The stored content matches the cache condition",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Strong SHA-256 ETag for the stored asset."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "bytes, including session-authorized playback."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            },
+            "description": "One byte range. It may have a start and end, only a start, or a suffix length to read from the end."
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for single-use audio/video, using its already claimed active playback token. Ordinary media need no token."
+          }
+        ],
+        "description": "Open a published HLS track asset. GET supports one byte range and cache conditions after authorization; HEAD ignores Range. Single-use playback supports repeated reads with the same token and uses no-store. These reads remain available without audio/video processing tools."
+      }
+    },
+    "/media/{id}/hls/{track}/segment-{sequence}.m4s": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "track",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "description": "An identifier from the video variants or shared audio summary."
+        },
+        {
+          "name": "sequence",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "description": "A zero-based segment sequence, within the u32 range. Generated URLs pad it to at least six digits, for example segment-000000.m4s. Follow the track playlist URL."
+        }
+      ],
+      "get": {
+        "operationId": "getHlsSegment",
+        "summary": "Read an HLS media segment",
+        "responses": {
+          "200": {
+            "description": "Full content",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Strong SHA-256 ETag for the stored asset."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "bytes, including session-authorized playback."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "video/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "206": {
+            "description": "Requested byte range",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Strong SHA-256 ETag for the stored asset."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "bytes, including session-authorized playback."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "video/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The stored content matches the cache condition",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Strong SHA-256 ETag for the stored asset."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "bytes, including session-authorized playback."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "416": {
+            "description": "The requested range is outside the file",
+            "headers": {
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            },
+            "description": "One byte range. It may have a start and end, only a start, or a suffix length to read from the end."
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for single-use audio/video, using its already claimed active playback token. Ordinary media need no token."
+          }
+        ],
+        "description": "Open a published HLS track asset. GET supports one byte range and cache conditions after authorization; HEAD ignores Range. Single-use playback supports repeated reads with the same token and uses no-store. These reads remain available without audio/video processing tools."
+      },
+      "head": {
+        "operationId": "headHlsSegment",
+        "summary": "Read headers for an HLS media segment",
+        "responses": {
+          "200": {
+            "description": "Full content",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Strong SHA-256 ETag for the stored asset."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "bytes, including session-authorized playback."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          },
+          "304": {
+            "description": "The stored content matches the cache condition",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Request ID created by the server."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Strong SHA-256 ETag for the stored asset."
+              },
+              "Last-Modified": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Content creation time in HTTP date format."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Expiring and single-use content use no-store."
+              },
+              "Accept-Ranges": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "bytes, including session-authorized playback."
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            },
+            "description": "One byte range. It may have a start and end, only a start, or a suffix length to read from the end."
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for single-use audio/video, using its already claimed active playback token. Ordinary media need no token."
+          }
+        ],
+        "description": "Open a published HLS track asset. GET supports one byte range and cache conditions after authorization; HEAD ignores Range. Single-use playback supports repeated reads with the same token and uses no-store. These reads remain available without audio/video processing tools."
       }
     }
   },
@@ -1797,7 +3076,7 @@
           "audio",
           "video"
         ],
-        "description": "Audio and video are planned for a future release. Both currently return 415."
+        "description": "A stored resource, image, standalone audio item, or HLS video. Processing availability depends on compiled features and installed tools; check capabilities."
       },
       "Retention": {
         "type": "object",
@@ -1817,7 +3096,8 @@
           },
           "single_use": {
             "type": "boolean",
-            "default": false
+            "default": false,
+            "description": "Resources and images allow one content GET claim. Audio and video allow one playback-session claim; the same valid token can read segments, seek, and replay. Session duration is fixed and cannot exceed media expiry."
           }
         },
         "additionalProperties": false
@@ -1910,7 +3190,7 @@
       },
       "ImageOptions": {
         "type": "object",
-        "description": "SVG and SVGZ use a renderer that does not load external images. SVG XML and embedded data share a 64 MiB limit, with at most 32 nested SVG images. SVGZ originals keep their compressed bytes and use application/gzip.",
+        "description": "SVG and SVGZ use a renderer that does not load external images. SVG XML and embedded data share a 64 MiB limit, with at most 32 nested SVG images. SVGZ originals keep their compressed bytes and use application/gzip. Every output size still needs WebP, including trust mode; an uploaded JPEG or PNG can only replace its matching fallback. Outputs do not upscale.",
         "properties": {
           "variants": {
             "type": "array",
@@ -1932,6 +3212,9 @@
           "save_original": {
             "type": "boolean",
             "default": true
+          },
+          "processing_mode": {
+            "$ref": "#/components/schemas/ProcessingMode"
           }
         },
         "additionalProperties": false
@@ -1972,19 +3255,79 @@
           },
           "image": {
             "$ref": "#/components/schemas/ImageOptions"
+          },
+          "audio": {
+            "$ref": "#/components/schemas/AudioOptions"
+          },
+          "video": {
+            "$ref": "#/components/schemas/VideoOptions"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "video"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "video"
+              ]
+            }
+          }
+        ]
       },
       "ProcessOptions": {
         "type": "object",
         "properties": {
           "image": {
             "$ref": "#/components/schemas/ImageOptions"
+          },
+          "audio": {
+            "$ref": "#/components/schemas/AudioOptions"
+          },
+          "video": {
+            "$ref": "#/components/schemas/VideoOptions"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "image",
+              "audio",
+              "video"
+            ],
+            "default": "image",
+            "description": "The output media kind. Defaults to image for older clients."
           }
         },
         "additionalProperties": false,
-        "description": "The original file must be available for a new task. A repeated request with the same idempotency key, source ID, and options returns the existing task even after the source is deleted or expires. A single-use source returns 409. The result keeps the source expiry time and is not saved if that time has passed."
+        "description": "Create new image, audio, or video media from a retained original without changing the source. The original must exist. Single-use sources return 409. The result keeps the source expiry and is not published after it has expired. The same idempotency key, source ID, and options return the existing task even after the source is deleted or expires.",
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "video"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "video"
+              ]
+            }
+          }
+        ]
       },
       "ExportOptions": {
         "type": "object",
@@ -2085,6 +3428,9 @@
                 "type": "null"
               }
             ]
+          },
+          "processing_method": {
+            "$ref": "#/components/schemas/ProcessingMethod"
           }
         },
         "required": [
@@ -2144,7 +3490,8 @@
             ]
           },
           "single_use": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "One content claim for resource/image media or one playback-session claim for audio/video media."
           },
           "consumed_at": {
             "anyOf": [
@@ -2155,7 +3502,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Time the content or playback session was claimed. Ordinary metadata reads hide consumed media."
           },
           "animated": {
             "type": "boolean"
@@ -2163,6 +3511,18 @@
           "frame_count": {
             "type": "integer",
             "minimum": 0
+          },
+          "audio": {
+            "$ref": "#/components/schemas/AudioMedia"
+          },
+          "video": {
+            "$ref": "#/components/schemas/VideoMedia"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProcessingWarning"
+            }
           }
         },
         "required": [
@@ -2295,8 +3655,11 @@
             "enum": [
               "resource",
               "image",
+              "audio",
+              "video",
               "import",
-              "export"
+              "export",
+              "mp4_export"
             ]
           },
           "status": {
@@ -2353,10 +3716,13 @@
                 "$ref": "#/components/schemas/ImportResult"
               },
               {
+                "$ref": "#/components/schemas/Mp4ExportResult"
+              },
+              {
                 "type": "null"
               }
             ],
-            "description": "Upload and image tasks return Media. Export tasks return ExportResult. Import tasks return ImportResult."
+            "description": "Uploads and media processing return Media. TAR export returns ExportResult. MP4 export returns Mp4ExportResult. Import returns ImportResult. Results never contain playback-session tokens."
           },
           "error": {
             "anyOf": [
@@ -2445,7 +3811,8 @@
               "image",
               "audio",
               "video"
-            ]
+            ],
+            "description": "Availability for new uploads and reprocessing. Existing media reads do not depend on these processing flags."
           },
           "image": {
             "type": "object",
@@ -2474,6 +3841,16 @@
               },
               "limits": {
                 "$ref": "#/components/schemas/ImageLimits"
+              },
+              "processing_modes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ProcessingMode"
+                }
+              },
+              "save_original_default": {
+                "type": "boolean",
+                "const": true
               }
             },
             "required": [
@@ -2482,7 +3859,9 @@
               "outputs",
               "apng_requires_ffmpeg",
               "apng_timing_precision_ms",
-              "limits"
+              "limits",
+              "processing_modes",
+              "save_original_default"
             ]
           },
           "max_file_size": {
@@ -2505,31 +3884,240 @@
           },
           "archive_version": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Current export archive format version, 2. Import also accepts version 1.",
+            "const": 2
           },
           "export_pauses_writes": {
             "type": "boolean"
           },
-          "future_profiles": {
+          "av": {
             "type": "object",
             "properties": {
-              "audio": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
+              "available": {
+                "type": "boolean",
+                "description": "The external FFmpeg and ffprobe programs passed discovery and the minimum-version checks. This does not imply all encoders are available."
               },
-              "video": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
+              "minimum_tool_major": {
+                "type": "integer",
+                "const": 9
+              },
+              "audio_encoder": {
+                "type": "boolean",
+                "description": "AAC encoding is available for new standalone audio processing."
+              },
+              "video_encoder": {
+                "type": "boolean",
+                "description": "H.264 encoding and its required timestamp support are available for new video processing."
+              },
+              "flac_encoder": {
+                "type": "boolean",
+                "description": "FLAC encoding is available. Lossless preservation can fall back to AAC with a warning when it is needed but absent."
+              },
+              "unavailable_reason": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Reason external processing discovery is unavailable, or null when the tool discovery succeeded."
               }
             },
             "required": [
-              "audio",
-              "video"
+              "available",
+              "minimum_tool_major",
+              "audio_encoder",
+              "video_encoder",
+              "flac_encoder",
+              "unavailable_reason"
             ]
+          },
+          "audio": {
+            "type": "object",
+            "description": "Audio recipe metadata; use media.audio and av encoder flags for actual processing availability.",
+            "properties": {
+              "engine": {
+                "type": "string",
+                "const": "ffmpeg"
+              },
+              "profiles": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "m4a:aac-lc",
+                    "flac"
+                  ]
+                }
+              },
+              "aac_sample_rate": {
+                "type": "integer",
+                "const": 48000
+              },
+              "aac_bitrates": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "description": "First and second target bitrates, in bits per second: 256000 then 128000."
+              },
+              "mp3_fallback": {
+                "type": "boolean",
+                "const": false
+              },
+              "save_original_default": {
+                "type": "boolean",
+                "const": false
+              },
+              "processing_modes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ProcessingMode"
+                }
+              },
+              "selected_audio_streams": {
+                "type": "integer",
+                "const": 1
+              }
+            },
+            "required": [
+              "engine",
+              "profiles",
+              "aac_sample_rate",
+              "aac_bitrates",
+              "mp3_fallback",
+              "save_original_default",
+              "processing_modes",
+              "selected_audio_streams"
+            ]
+          },
+          "video": {
+            "type": "object",
+            "description": "Video recipe metadata. MP4 remux availability is independent of the video encoder flag.",
+            "properties": {
+              "engine": {
+                "type": "string",
+                "const": "ffmpeg"
+              },
+              "codec": {
+                "type": "string",
+                "const": "h264"
+              },
+              "pixel_format": {
+                "type": "string",
+                "const": "yuv420p"
+              },
+              "delivery": {
+                "type": "string",
+                "const": "hls-fmp4"
+              },
+              "requires_variants": {
+                "type": "boolean",
+                "const": true
+              },
+              "resolution_tiers": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "enum": [
+                    144,
+                    240,
+                    360,
+                    432,
+                    480,
+                    540,
+                    576,
+                    720,
+                    900,
+                    1080,
+                    1440,
+                    2160
+                  ]
+                }
+              },
+              "frame_rate_tiers": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "enum": [
+                    10,
+                    12,
+                    15,
+                    20,
+                    24,
+                    25,
+                    30,
+                    48,
+                    50,
+                    60
+                  ]
+                }
+              },
+              "bitrate": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Global 1080p/60 fps rate limit, in bits per second."
+              },
+              "bitrate_unit": {
+                "type": "string",
+                "const": "bits_per_second"
+              },
+              "save_original_default": {
+                "type": "boolean",
+                "const": false
+              },
+              "processing_modes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ProcessingMode"
+                }
+              },
+              "mp4_export": {
+                "type": "boolean",
+                "description": "New MP4 remux tasks can run when external tools are available, even if the H.264 encoder is not. This does not control reading completed artifacts."
+              }
+            },
+            "required": [
+              "engine",
+              "codec",
+              "pixel_format",
+              "delivery",
+              "requires_variants",
+              "resolution_tiers",
+              "frame_rate_tiers",
+              "bitrate",
+              "bitrate_unit",
+              "save_original_default",
+              "processing_modes",
+              "mp4_export"
+            ]
+          },
+          "playback_sessions": {
+            "type": "object",
+            "properties": {
+              "seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Configured fixed playback-session lifetime, capped by media expiry."
+              },
+              "single_use_semantics": {
+                "type": "string",
+                "const": "one_claim"
+              }
+            },
+            "required": [
+              "seconds",
+              "single_use_semantics"
+            ]
+          },
+          "mp4_export_retention_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Configured completed MP4 artifact retention, independent of task-history retention."
           }
         },
         "required": [
@@ -2543,7 +4131,485 @@
           "cancellation",
           "archive_version",
           "export_pauses_writes",
-          "future_profiles"
+          "av",
+          "audio",
+          "video",
+          "playback_sessions",
+          "mp4_export_retention_seconds"
+        ],
+        "description": "Processing availability and configured limits. New audio/video processing requires FFmpeg and ffprobe version 9 or later and the required encoders; missing or older tools do not prevent serving existing media or using resources and compatible image processing."
+      },
+      "ProcessingMode": {
+        "type": "string",
+        "enum": [
+          "transcode",
+          "trust"
+        ],
+        "default": "transcode",
+        "description": "Transcode uses the service recipe. Trust checks each file or compressed stream and reuses compliant content when possible; other outputs still encode."
+      },
+      "ProcessingMethod": {
+        "type": "string",
+        "enum": [
+          "unknown",
+          "copied",
+          "remuxed",
+          "transcoded"
+        ],
+        "description": "How this output was created. Unknown is used by older metadata; copied reuses a complete file, remuxed keeps compressed streams in a new container, and transcoded encodes from the source."
+      },
+      "AudioOptions": {
+        "type": "object",
+        "properties": {
+          "processing_mode": {
+            "$ref": "#/components/schemas/ProcessingMode"
+          },
+          "save_original": {
+            "type": "boolean",
+            "default": false,
+            "description": "Keep a separate original reference for later reprocessing. Published outputs can still reference uploaded bytes when false."
+          },
+          "preserve_lossless": {
+            "type": "boolean",
+            "default": false,
+            "description": "Preserve compatible lossless samples in FLAC with original sample rate, significant bit depth, and channel count, plus AAC fallback. If samples cannot be represented, or a needed FLAC encoder is unavailable, return AAC with a warning. Lossy sources remain AAC."
+          },
+          "audio_stream": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The source stream index. If omitted, use the default audio stream, then the first audio stream."
+          }
+        },
+        "description": "Standalone audio uses native AAC-LC at 48 kHz with a 256 kbps first choice and a 128 kbps second choice if the first compressed payload is larger than the source. The second choice may be larger than the source. No MP3 fallback is produced. Mono and stereo stay unchanged; other AAC layouts are mixed to stereo.",
+        "additionalProperties": false
+      },
+      "VideoVariantSpec": {
+        "type": "object",
+        "properties": {
+          "resolution": {
+            "type": "integer",
+            "enum": [
+              144,
+              240,
+              360,
+              432,
+              480,
+              540,
+              576,
+              720,
+              900,
+              1080,
+              1440,
+              2160
+            ],
+            "description": "The horizontal canvas tier. Requests are adjusted downward for the source."
+          },
+          "fps": {
+            "type": "integer",
+            "enum": [
+              10,
+              12,
+              15,
+              20,
+              24,
+              25,
+              30,
+              48,
+              50,
+              60
+            ],
+            "description": "The fps tier. Sources below 10 fps use 10 fps; fractional cadence is reported by the output frame_rate."
+          }
+        },
+        "required": [
+          "resolution",
+          "fps"
+        ],
+        "additionalProperties": false
+      },
+      "VideoOptions": {
+        "type": "object",
+        "properties": {
+          "processing_mode": {
+            "$ref": "#/components/schemas/ProcessingMode"
+          },
+          "save_original": {
+            "type": "boolean",
+            "default": false,
+            "description": "Keep a separate original reference for later reprocessing. Published outputs can still reference uploaded bytes when false."
+          },
+          "preserve_lossless": {
+            "type": "boolean",
+            "default": false,
+            "description": "Preserve compatible lossless samples in FLAC with original sample rate, significant bit depth, and channel count, plus AAC fallback. If samples cannot be represented, or a needed FLAC encoder is unavailable, return AAC with a warning. Lossy sources remain AAC."
+          },
+          "audio_stream": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The source stream index. If omitted, use the default audio stream, then the first audio stream."
+          },
+          "variants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VideoVariantSpec"
+            },
+            "minItems": 1,
+            "maxItems": 16,
+            "description": "Explicit resolution and fps pairs. There is no default ladder. Identical effective outputs are combined."
+          }
+        },
+        "required": [
+          "variants"
+        ],
+        "description": "Video normally stores H.264 HLS fMP4 with separate shared audio tracks. Horizontal canvases fit content with black borders and do not enlarge, stretch, or crop it. New encoding uses x264 veryslow, CRF 23, yuv420p, progressive frames, and SDR. Bitrate is limited by service configuration and cannot be overridden here.",
+        "additionalProperties": false
+      },
+      "Rational": {
+        "type": "object",
+        "properties": {
+          "numerator": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "denominator": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4294967295
+          }
+        },
+        "required": [
+          "numerator",
+          "denominator"
+        ]
+      },
+      "AudioVariant": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Audio identifier: aac_low, aac_high, or flac."
+          },
+          "codec": {
+            "type": "string",
+            "enum": [
+              "aac",
+              "flac"
+            ]
+          },
+          "bitrate": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Average compressed bitrate in bits per second."
+          },
+          "sample_rate": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "channels": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "bits_per_sample": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 255
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "processing_method": {
+            "$ref": "#/components/schemas/ProcessingMethod"
+          },
+          "file": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MediaFile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "content_path": {
+            "type": "string",
+            "description": "Standalone audio content path, or a video audio track playlist path. HLS tracks have no standalone file metadata."
+          }
+        },
+        "required": [
+          "id",
+          "codec",
+          "bitrate",
+          "sample_rate",
+          "channels",
+          "bits_per_sample",
+          "processing_method",
+          "file",
+          "content_path"
+        ]
+      },
+      "AudioMedia": {
+        "type": "object",
+        "properties": {
+          "duration_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "variants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AudioVariant"
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "duration_seconds",
+          "variants"
+        ],
+        "description": "Standalone AAC and optional FLAC outputs."
+      },
+      "VideoVariant": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Existing video version and HLS track identifier, such as 1080p30."
+          },
+          "resolution": {
+            "type": "integer",
+            "enum": [
+              144,
+              240,
+              360,
+              432,
+              480,
+              540,
+              576,
+              720,
+              900,
+              1080,
+              1440,
+              2160
+            ]
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "fps": {
+            "type": "integer",
+            "enum": [
+              10,
+              12,
+              15,
+              20,
+              24,
+              25,
+              30,
+              48,
+              50,
+              60
+            ]
+          },
+          "frame_rate": {
+            "$ref": "#/components/schemas/Rational",
+            "description": "Nominal picture cadence. Endpoint pictures can be held longer to retain source audio/video timing."
+          },
+          "leading_hold_seconds": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0,
+            "description": "Time the first picture is held before source video starts. Omitted when zero."
+          },
+          "codec": {
+            "type": "string",
+            "description": "HLS codec string including the H.264 profile and level."
+          },
+          "processing_method": {
+            "$ref": "#/components/schemas/ProcessingMethod"
+          },
+          "playlist_path": {
+            "type": "string"
+          },
+          "audio": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Allowed shared audio track identifiers. Below 720p only aac_low is allowed; from 720p aac_high can also be allowed, and from 1080p flac can also be allowed when present."
+          }
+        },
+        "required": [
+          "id",
+          "resolution",
+          "width",
+          "height",
+          "fps",
+          "frame_rate",
+          "codec",
+          "processing_method",
+          "playlist_path",
+          "audio"
+        ]
+      },
+      "VideoMedia": {
+        "type": "object",
+        "properties": {
+          "duration_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "variants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VideoVariant"
+            },
+            "minItems": 1
+          },
+          "audio": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AudioVariant"
+            }
+          },
+          "master_path": {
+            "type": "string",
+            "description": "Path to the default AAC master playlist."
+          }
+        },
+        "required": [
+          "duration_seconds",
+          "variants",
+          "audio",
+          "master_path"
+        ],
+        "description": "HLS summary without the complete segment inventory."
+      },
+      "ProcessingWarning": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable code, such as lossless_not_preserved."
+          },
+          "message": {
+            "type": "string",
+            "description": "Explanation for people to read."
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ]
+      },
+      "Mp4ExportOptions": {
+        "type": "object",
+        "properties": {
+          "variant": {
+            "type": "string",
+            "minLength": 1,
+            "description": "An identifier from existing Media.video.variants. The task does not create a missing resolution or fps version."
+          }
+        },
+        "required": [
+          "variant"
+        ],
+        "additionalProperties": false
+      },
+      "PlaybackSession": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 64,
+            "description": "Secret token passed as the session query parameter for this media and its MP4 exports. It is not placed in public Media or Task results.",
+            "maxLength": 64,
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Fixed session expiry with millisecond precision from the first reply and on idempotent retries. The default is 24 hours after claiming, limited by media expiry, and reads do not extend it."
+          }
+        },
+        "required": [
+          "token",
+          "expires_at"
+        ]
+      },
+      "Mp4ExportResult": {
+        "type": "object",
+        "properties": {
+          "media_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The source video media identifier."
+          },
+          "variant": {
+            "type": "string",
+            "description": "The selected existing video version."
+          },
+          "audio": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "aac_low",
+                  "aac_high",
+                  "flac"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The selected audio profile, or null for video-only media."
+          },
+          "artifact": {
+            "$ref": "#/components/schemas/MediaFile"
+          },
+          "artifact_path": {
+            "type": "string",
+            "description": "Service-root-relative download path, such as api/v1/tasks/UUID/artifact, without a playback-session credential."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Fixed artifact expiry with millisecond precision. The default is 24 hours after completion, capped by source expiry and any required playback session expiry."
+          }
+        },
+        "required": [
+          "media_id",
+          "variant",
+          "audio",
+          "artifact",
+          "artifact_path",
+          "expires_at"
         ]
       }
     },

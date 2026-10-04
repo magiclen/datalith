@@ -39,6 +39,7 @@ export PATH="/opt/ffmpeg/bin:$PATH"
 The installer uses the cached archives when present and still checks their SHA-256 values.
 Docker installs the build dependencies in its native stage and invokes the installer without its dependency setup option.
 The Docker build argument `NATIVE_BUILD_JOBS` defaults to `2` and controls both the FFmpeg and ImageMagick builds.
+`CARGO_BUILD_JOBS` defaults to `2` for the full image's Rust build and can also be overridden with `--build-arg`.
 CI caches the installed tools by operating system version, architecture, and installer content.
 CI adds their directory to `GITHUB_PATH` before configuring ImageMagick.
 Tests without default features do not install FFmpeg.

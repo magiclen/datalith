@@ -30,6 +30,7 @@ ENV PKG_CONFIG_PATH=/opt/imagemagick/lib/pkgconfig
 ENV LD_LIBRARY_PATH=/opt/imagemagick/lib
 
 FROM native AS builder
+ARG CARGO_BUILD_JOBS=2
 WORKDIR /build
 COPY . .
 RUN cargo build --locked --release -p datalith
