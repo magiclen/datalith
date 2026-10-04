@@ -67,7 +67,7 @@ async fn multipart(
     operation_id = "upload",
     summary = "Save an upload and create a task",
     tag = "Tasks",
-    description = "The service saves the upload and task before responding and does not wait for media conversion. The upload streams to disk. Without options it creates a permanent resource. Image originals are saved by default; audio and video originals are not. Video requests must specify nonempty resolution and fps pairs.",
+    description = "The upload streams to disk and returns a task before conversion. Enable automatic conversion with enable_convert_to_image, enable_convert_to_audio, or enable_convert_to_video, using a resource kind or no kind. Only enabled matching types are converted; other files stay resources. All enabled settings are checked first, and video conversion requires resolution and fps pairs. Automatic tasks have kind upload; their result reports the detected media kind. Explicit image, audio, or video kinds cannot use automatic flags. Without options the file stays a permanent resource. Image originals are kept by default; audio and video originals are not.",
     request_body(content = super::openapi::UploadBody, content_type = "multipart/form-data", encoding(("options" = (content_type = "application/json")))),
     params(
         ("Idempotency-Key" = Option<String>, Header, description = "An ASCII key stored with the task for seven days by default. The same key and input return the existing task. Different input with the same key returns 409.")

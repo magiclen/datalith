@@ -86,6 +86,99 @@ async fn service(path: &Path) -> DatalithService {
 }
 
 #[tokio::test]
+async fn automatic_audio_and_video_follow_streams_and_enabled_types() {
+    let directory = tempfile::tempdir().unwrap();
+    let audio = directory.path().join("covered.m4a");
+    let cover = directory.path().join("cover.png");
+    fs::write(&cover, include_bytes!("data/image.png")).await.unwrap();
+    fixture(&audio, &[
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=48000:duration=0.3",
+        "-i",
+        cover.to_str().unwrap(),
+        "-map",
+        "0:a",
+        "-map",
+        "1:v",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "64k",
+        "-c:v",
+        "png",
+        "-disposition:v",
+        "attached_pic",
+    ])
+    .await;
+    let video = directory.path().join("movie.mp4");
+    fixture(&video, &[
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=256x144:rate=12:duration=0.5",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-pix_fmt",
+        "yuv420p",
+    ])
+    .await;
+    let service = service(&directory.path().join("store")).await;
+    let options = UploadOptions {
+        enable_convert_to_audio: true,
+        enable_convert_to_video: true,
+        video: VideoOptions {
+            variants: vec![VideoVariantSpec {
+                resolution: 144, fps: 12
+            }],
+            ..VideoOptions::default()
+        },
+        ..UploadOptions::default()
+    };
+    for (path, expected) in [(&audio, MediaKind::Audio), (&video, MediaKind::Video)] {
+        let submitted = service
+            .submit_upload(fs::File::open(path).await.unwrap(), options.clone(), None)
+            .await
+            .unwrap();
+        assert_eq!("upload", submitted.kind);
+        let done = finished(&service, submitted.id).await;
+        assert_eq!(TaskStatus::Succeeded, done.status, "{:?}", done.error);
+        let media: Media = serde_json::from_value(done.result.unwrap()).unwrap();
+        assert_eq!(expected, media.kind);
+    }
+    let media = upload(&service, &audio, UploadOptions {
+        enable_convert_to_video: true,
+        video: options.video.clone(),
+        ..UploadOptions::default()
+    })
+    .await;
+    assert_eq!(MediaKind::Resource, media.kind);
+    assert!(media.audio.is_none());
+    assert!(media.video.is_none());
+
+    for options in [
+        UploadOptions {
+            enable_convert_to_video: true,
+            ..UploadOptions::default()
+        },
+        UploadOptions {
+            kind: MediaKind::Audio,
+            enable_convert_to_audio: true,
+            ..UploadOptions::default()
+        },
+    ] {
+        assert!(matches!(
+            service.submit_upload(b"unused".as_slice(), options, None).await,
+            Err(datalith_core::ServiceError::Invalid(_))
+        ));
+    }
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn audio_encodes_aac_preserves_integer_samples_and_reports_float_fallback() {
     let directory = tempfile::tempdir().unwrap();
     let integer = directory.path().join("integer.wav");

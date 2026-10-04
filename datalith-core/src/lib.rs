@@ -1,176 +1,43 @@
 /*!
 # Datalith Core
 
-A Rust library that stores file contents on disk and metadata in SQLite.
+Datalith Core stores file contents on disk and metadata in SQLite.
+Files with the same content share one stored copy, and one process owns each data folder.
 
-Use `DatalithService` to upload media, create image outputs, and import or export archives through stored tasks.
-Tasks can recover after a restart, and files with the same content share one stored copy.
-The direct storage API below is still available for older applications.
+Use [`DatalithService`] to upload files, process media, and move data through background tasks.
+Enable the conversion flags in [`UploadOptions`] to let the service select a matching media type.
+Files that do not match an enabled type stay resources.
+Tasks can recover after a restart.
 
-## Data Structures
-
-* `File`: A stored file and its metadata.
-* `Resource`: A file of any type.
-  Several resources can refer to the same file.
-* `Image`: An image with an optional original file and thumbnails in several sizes and formats.
-
-## Direct storage examples
-
-#### Put a File
+## Start a service
 
 ```rust,no_run
-use datalith_core::{mime, Datalith, FileTypeLevel};
-use tokio::io::AsyncReadExt;
+use datalith_core::{Datalith, DatalithService, ServiceConfig, UploadOptions};
 
-# #[tokio::main(flavor = "current_thread")]
-# async fn main() {
-let datalith = Datalith::new("datalith").await.unwrap();
-
-let file = datalith.put_file_by_buffer(b"Hello world!", Some("plain.txt"), Some((mime::TEXT_PLAIN_UTF_8, FileTypeLevel::Manual))).await.unwrap();
-
-let mut reader = file.create_reader().await.unwrap();
-
-let mut s = String::new();
-reader.read_to_string(&mut s).await.unwrap();
-
-println!("{s}"); // Hello world!
-
-datalith.close().await;
+# #[tokio::main]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+let store = Datalith::new("data").await?;
+let service = DatalithService::new(store, ServiceConfig::default()).await?;
+let task = service.submit_upload(
+    &b"Hello world!"[..],
+    UploadOptions { file_name: Some("hello.txt".into()), ..UploadOptions::default() },
+    None,
+).await?;
+println!("Task: {}", task.id);
+service.close().await?;
+# Ok(())
 # }
 ```
 
-#### Get a File
+Read the task with [`DatalithService::get_task`] to get its state and result.
+Image settings use [`ImageOptions`], audio settings use [`AudioOptions`], and video settings use [`VideoOptions`].
+Video conversion needs explicit resolution and frame-rate pairs.
 
-```rust,no_run
-use std::str::FromStr;
+[`Retention`] controls expiry and single-use access.
+[`ProcessingMode::Trust`] can reuse content that meets the output requirements.
 
-use datalith_core::{uuid::Uuid, Datalith, FileTypeLevel};
-
-# #[tokio::main(flavor = "current_thread")]
-# async fn main() {
-let datalith = Datalith::new("datalith").await.unwrap();
-
-let file = datalith.get_file_by_id(Uuid::from_str("c31343fc-eae1-4416-809a-a6d96b69b3b9").unwrap()).await.unwrap();
-
-if let Some(file) = file {
-    // Use the result here.
-} else {
-    println!("not found");
-}
-
-datalith.close().await;
-# }
-```
-
-#### Put a Temporary File
-
-```rust,no_run
-use datalith_core::{mime, Datalith, FileTypeLevel};
-
-# #[tokio::main(flavor = "current_thread")]
-# async fn main() {
-let datalith = Datalith::new("datalith").await.unwrap();
-
-let file_id = datalith.put_file_by_buffer_temporarily(b"Hello world!", Some("plain.txt"), Some((mime::TEXT_PLAIN_UTF_8, FileTypeLevel::Manual))).await.unwrap().id();
-let file = datalith.get_file_by_id(file_id).await.unwrap().unwrap(); // A temporary file can be claimed only once.
-
-// Use the result here.
-
-datalith.close().await;
-# }
-```
-
-#### Put a Resource
-
-```rust,no_run
-use datalith_core::{mime, Datalith, FileTypeLevel};
-use tokio::io::AsyncReadExt;
-
-# #[tokio::main(flavor = "current_thread")]
-# async fn main() {
-let datalith = Datalith::new("datalith").await.unwrap();
-
-let resource = datalith.put_resource_by_buffer(b"Hello world!", Some("plain.txt"), Some((mime::TEXT_PLAIN_UTF_8, FileTypeLevel::Manual))).await.unwrap();
-
-let mut reader = resource.file().create_reader().await.unwrap();
-
-let mut s = String::new();
-reader.read_to_string(&mut s).await.unwrap();
-
-println!("{s}"); // Hello world!
-
-datalith.close().await;
-# }
-```
-
-#### Get a Resource
-
-```rust,no_run
-use std::str::FromStr;
-
-use datalith_core::{uuid::Uuid, Datalith, FileTypeLevel};
-
-# #[tokio::main(flavor = "current_thread")]
-# async fn main() {
-let datalith = Datalith::new("datalith").await.unwrap();
-
-let resource = datalith.get_resource_by_id(Uuid::from_str("c31343fc-eae1-4416-809a-a6d96b69b3b9").unwrap()).await.unwrap();
-
-if let Some(resource) = resource {
-    // Use the result here.
-} else {
-    println!("not found");
-}
-
-datalith.close().await;
-# }
-```
-
-#### Put a Temporary Resource
-
-```rust,no_run
-use datalith_core::{mime, Datalith, FileTypeLevel};
-
-# #[tokio::main(flavor = "current_thread")]
-# async fn main() {
-let datalith = Datalith::new("datalith").await.unwrap();
-
-let resource_id = datalith.put_resource_by_buffer_temporarily(b"Hello world!", Some("plain.txt"), Some((mime::TEXT_PLAIN_UTF_8, FileTypeLevel::Manual))).await.unwrap().id();
-let resource = datalith.get_resource_by_id(resource_id).await.unwrap().unwrap(); // A temporary resource can be claimed only once.
-
-// Use the result here.
-
-datalith.close().await;
-# }
-```
-
-#### Put an Image
-
-```rust,no_run
-# #[cfg(feature = "image-convert")]
-use datalith_core::{mime, CenterCrop, Datalith};
-
-# #[cfg(feature = "image-convert")]
-# #[tokio::main(flavor = "current_thread")]
-# async fn main() {
-let datalith = Datalith::new("datalith").await.unwrap();
-
-let image = datalith.put_image_by_path("/path/to/image", Some("my-image"), Some(1280), Some(720), CenterCrop::new(16.0, 9.0), true).await.unwrap();
-
-println!("image size: {}x{}", image.image_width(), image.image_height());
-
-let original_file = image.original_file();
-let thumbnails = image.thumbnails();                   // WebP files (1x, 2x, 3x)
-let fallback_thumbnails = image.fallback_thumbnails(); // JPEG or PNG files (1x, 2x, 3x)
-
-// Use the result here.
-
-datalith.close().await;
-# }
-#
-# #[cfg(not(feature = "image-convert"))]
-# fn main () {}
-```
+The older direct storage methods on [`Datalith`] remain available for existing applications.
+Use `DatalithService` for new applications, and avoid mixing its writes with direct storage writes.
 */
 
 pub extern crate chrono;

@@ -43,6 +43,54 @@ fn read_svg(reader: impl Read) -> Result<(Option<Vec<u8>>, bool), ServiceError> 
     Ok((data, compressed))
 }
 
+pub(super) fn is_svg(input: &Path) -> Result<bool, ServiceError> {
+    let mut reader = BufReader::new(File::open(input)?);
+    let prefix = reader.fill_buf()?;
+    let compressed = prefix.starts_with(&[0x1F, 0x8B]);
+    if !compressed
+        && !prefix
+            .strip_prefix(b"\xEF\xBB\xBF")
+            .unwrap_or(prefix)
+            .trim_ascii_start()
+            .starts_with(b"<")
+    {
+        return Ok(false);
+    }
+    let mut header = Vec::new();
+    if compressed {
+        if GzDecoder::new(reader).take(65536).read_to_end(&mut header).is_err() {
+            return Ok(false);
+        }
+    } else {
+        reader.take(65536).read_to_end(&mut header)?;
+    }
+    let mut header = header.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&header).trim_ascii_start();
+    loop {
+        let ending = if header.starts_with(b"<?") {
+            b"?>".as_slice()
+        } else if header.starts_with(b"<!--") {
+            b"-->".as_slice()
+        } else if header.starts_with(b"<!DOCTYPE") {
+            b">".as_slice()
+        } else {
+            break;
+        };
+        let Some(end) = header.windows(ending.len()).position(|part| part == ending) else {
+            return Ok(false);
+        };
+        header = header[end + ending.len()..].trim_ascii_start();
+    }
+    let Some(header) = header.strip_prefix(b"<") else {
+        return Ok(false);
+    };
+    let Some(end) =
+        header.iter().position(|byte| byte.is_ascii_whitespace() || matches!(byte, b'/' | b'>'))
+    else {
+        return Ok(false);
+    };
+    Ok(header[..end].rsplit(|byte| *byte == b':').next() == Some(b"svg".as_slice()))
+}
+
 pub(super) fn render(
     input: &Path,
     output: &Path,

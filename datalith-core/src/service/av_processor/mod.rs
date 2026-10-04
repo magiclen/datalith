@@ -531,6 +531,37 @@ impl Pipeline<'_> {
     }
 }
 
+pub(super) async fn detect_kind(
+    service: &DatalithService,
+    input: &Path,
+    cancel: &AtomicBool,
+) -> Result<Option<MediaKind>, ServiceError> {
+    let probe = match probe::inspect(service, input, cancel).await {
+        Ok(probe) => probe,
+        Err(ServiceError::Invalid(_)) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    // Image demuxers can expose animated frames as video streams.
+    if probe.format["format_name"].as_str().is_some_and(|format| {
+        format.split(',').any(|name| {
+            matches!(name, "image2" | "image2pipe" | "gif" | "apng" | "ico")
+                || name.ends_with("_pipe")
+        })
+    }) {
+        return Ok(Some(MediaKind::Image));
+    }
+    if probe.streams.iter().any(|stream| {
+        stream.text("codec_type") == "video"
+            && stream.0["disposition"]["attached_pic"].as_i64() != Some(1)
+    }) {
+        Ok(Some(MediaKind::Video))
+    } else if probe.streams.iter().any(|stream| stream.text("codec_type") == "audio") {
+        Ok(Some(MediaKind::Audio))
+    } else {
+        Ok(None)
+    }
+}
+
 pub(super) fn validate_options(options: &UploadOptions) -> Result<(), ServiceError> {
     if options.kind == MediaKind::Video {
         if options.video.variants.is_empty() || options.video.variants.len() > 16 {

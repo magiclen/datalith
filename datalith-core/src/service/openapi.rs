@@ -30,6 +30,7 @@ pub(super) fn task_kind() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Sch
     utoipa::openapi::schema::ObjectBuilder::new()
         .schema_type(utoipa::openapi::schema::Type::String)
         .enum_values(Some([
+            "upload",
             "resource",
             "image",
             "audio",

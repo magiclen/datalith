@@ -50,6 +50,84 @@ async fn upload(service: &DatalithService, bytes: &[u8], image: ImageOptions) ->
 }
 
 #[tokio::test]
+async fn automatic_images_keep_default_sizes_and_other_files_stay_resources() {
+    use std::io::Write;
+
+    let directory = tempfile::tempdir().unwrap();
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="red"/></svg>"#;
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gzip.write_all(svg).unwrap();
+    let compressed = gzip.finish().unwrap();
+    let mut first_task = None;
+    let options = UploadOptions {
+        enable_convert_to_image: true,
+        file_name: Some("wrong-name.mp3".into()),
+        file_type: Some("audio/mpeg".into()),
+        ..UploadOptions::default()
+    };
+    for (index, (bytes, kind, animated)) in [
+        (include_bytes!("data/image.png").as_slice(), MediaKind::Image, false),
+        (GIF, MediaKind::Image, true),
+        (svg.as_slice(), MediaKind::Image, false),
+        (compressed.as_slice(), MediaKind::Image, false),
+        (b"A plain file.".as_slice(), MediaKind::Resource, false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let submitted = service
+            .submit_upload(bytes, options.clone(), Some(format!("auto-image-{index}")))
+            .await
+            .unwrap();
+        assert_eq!("upload", submitted.kind);
+        first_task.get_or_insert(submitted.id);
+        let done = finished(&service, submitted.id).await;
+        assert_eq!(TaskStatus::Succeeded, done.status, "{:?}", done.error);
+        let media: Media = serde_json::from_value(done.result.unwrap()).unwrap();
+        assert_eq!(kind, media.kind);
+        assert_eq!(animated, media.animated);
+        if kind == MediaKind::Image {
+            let variant = media.variants.iter().find(|variant| variant.format == "webp").unwrap();
+            let expected = if bytes == svg || bytes == compressed {
+                (20, 10)
+            } else {
+                let original = identify_ping(&ImageResource::Data(bytes.to_vec())).unwrap();
+                (original.resolution.width, original.resolution.height)
+            };
+            assert_eq!(expected, (variant.width, variant.height));
+            assert!(media.variants.iter().all(|variant| variant.multiplier == 1));
+        } else {
+            assert!(media.variants.is_empty());
+        }
+    }
+    service.close().await.unwrap();
+    drop(service);
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    let repeated = service
+        .submit_upload(
+            include_bytes!("data/image.png").as_slice(),
+            options,
+            Some("auto-image-0".into()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first_task.unwrap(), repeated.id);
+    assert_eq!(TaskStatus::Succeeded, repeated.status);
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn svg_keeps_embedded_images_and_blocks_external_images() {
     use std::io::Write;
 

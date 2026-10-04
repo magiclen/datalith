@@ -1,22 +1,23 @@
 services:
   app:
-    restart: always
+    image: datalith:media
+    container_name: datalith
     build:
       context: .
-      dockerfile: Dockerfile
-    image: datalith
-    container_name: datalith
+      target: media
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 1m
     environment:
-      TZ: Asia/Taipei
       DATALITH_MAX_FILE_SIZE: 2 GiB
       DATALITH_WORKERS: 1
       DATALITH_TASK_RETENTION_SECONDS: 604800
     volumes:
-      - ~/docker/datalith:/app/shared
+      - ~/docker/datalith/db:/app/data
     ports:
       - "127.0.0.1:1111:1111"
-    command: --environment /app/shared/db
     logging:
-      driver: "syslog"
+      driver: json-file
       options:
-        tag: "docker/{{.ImageName}}/{{.Name}}"
+        max-size: 10m
+        max-file: "3"

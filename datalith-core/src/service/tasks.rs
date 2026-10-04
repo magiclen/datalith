@@ -161,7 +161,14 @@ impl DatalithService {
     }
 
     fn validate_upload(&self, options: &UploadOptions) -> Result<(), ServiceError> {
-        if matches!(options.kind, MediaKind::Audio | MediaKind::Video) {
+        if options.automatic() && options.kind != MediaKind::Resource {
+            return Err(ServiceError::Invalid(
+                "automatic conversion flags cannot be combined with an explicit media kind".into(),
+            ));
+        }
+        let audio = options.kind == MediaKind::Audio || options.enable_convert_to_audio;
+        let video = options.kind == MediaKind::Video || options.enable_convert_to_video;
+        if audio || video {
             #[cfg(feature = "av-convert")]
             {
                 if !self.0.av.available {
@@ -173,14 +180,16 @@ impl DatalithService {
                             .unwrap_or_else(|| "audio and video processing are unavailable".into()),
                     ));
                 }
-                if options.kind == MediaKind::Audio && !self.0.av.audio_available
-                    || options.kind == MediaKind::Video && !self.0.av.video_available
-                {
+                if audio && !self.0.av.audio_available || video && !self.0.av.video_available {
                     return Err(ServiceError::Unsupported(
                         "the required media encoder or timestamp filter is unavailable".into(),
                     ));
                 }
-                super::av_processor::validate_options(options)?;
+                let mut enabled = options.clone();
+                if video {
+                    enabled.kind = MediaKind::Video;
+                }
+                super::av_processor::validate_options(&enabled)?;
             }
             #[cfg(not(feature = "av-convert"))]
             return Err(ServiceError::Unsupported(
@@ -201,7 +210,7 @@ impl DatalithService {
             crate::mime::Mime::from_str(file_type)
                 .map_err(|_| ServiceError::Invalid("invalid MIME type".into()))?;
         }
-        if options.kind == MediaKind::Image {
+        if options.kind == MediaKind::Image || options.enable_convert_to_image {
             #[cfg(feature = "image-convert")]
             super::image_processor::validate_options(&options.image, &self.0.config.image_limits)?;
             #[cfg(not(feature = "image-convert"))]
@@ -314,6 +323,9 @@ impl DatalithService {
             let task = Task {
                 id,
                 kind: match &work {
+                    Work::Upload {
+                        options, ..
+                    } if options.automatic() => "upload",
                     Work::Upload {
                         options, ..
                     } => match options.kind {
@@ -466,7 +478,6 @@ impl DatalithService {
         Ok(())
     }
 
-    #[cfg(feature = "av-convert")]
     pub(super) async fn processing_progress(
         &self,
         id: Uuid,
@@ -484,7 +495,7 @@ impl DatalithService {
         }
         task.stage = stage.into();
         task.completed_units = completed.min(total);
-        task.total_units = Some(total);
+        task.total_units = (total != 0).then_some(total);
         self.save_task(&mut task).await
     }
 
@@ -856,7 +867,7 @@ impl DatalithService {
     async fn run_upload(
         &self,
         id: Uuid,
-        options: UploadOptions,
+        mut options: UploadOptions,
         recipe: ProcessingRecipe,
         source_expiry: Option<chrono::DateTime<Utc>>,
         staged: StagedInput,
@@ -865,6 +876,16 @@ impl DatalithService {
         #[cfg(not(feature = "image-convert"))]
         let _ = &recipe;
         let input = self.work_directory(id).join("input");
+        if options.automatic() {
+            self.processing_progress(id, "detecting", 0, 0).await?;
+            let kind = super::classification::detect(self, &input, &options, &cancel).await?;
+            options.kind = match kind {
+                MediaKind::Image if options.enable_convert_to_image => kind,
+                MediaKind::Audio if options.enable_convert_to_audio => kind,
+                MediaKind::Video if options.enable_convert_to_video => kind,
+                _ => MediaKind::Resource,
+            };
+        }
         let output = self.work_directory(id).join(format!("output-{}", Uuid::new_v4()));
         fs::create_dir(&output).await?;
         let created_at = Utc::now();

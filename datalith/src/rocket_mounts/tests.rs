@@ -171,6 +171,19 @@ async fn docs_serve_the_generated_api_and_embedded_swagger_ui() {
     let document: Value = response.into_json().await.unwrap();
     assert_eq!("3.1.0", document["openapi"]);
     assert_eq!("..", document["servers"][0]["url"]);
+    for flag in ["enable_convert_to_image", "enable_convert_to_audio", "enable_convert_to_video"] {
+        assert_eq!(
+            false,
+            document["components"]["schemas"]["UploadOptions"]["properties"][flag]["default"]
+        );
+    }
+    assert!(
+        document["components"]["schemas"]["Task"]["properties"]["kind"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|kind| kind == "upload")
+    );
     assert_eq!("getOpenApi", document["paths"]["/docs/json"]["get"]["operationId"]);
     assert!(document["paths"]["/media/{id}/hls/{track}/init.mp4"]["get"].is_object());
     assert!(
@@ -222,6 +235,36 @@ async fn docs_serve_the_generated_api_and_embedded_swagger_ui() {
     assert_eq!(Status::PermanentRedirect, response.status());
     assert_eq!(Some("docs/json"), response.headers().get_one("Location"));
     drop(response);
+    service.close().await.unwrap();
+}
+
+#[cfg(feature = "image-convert")]
+#[rocket::async_test]
+async fn automatic_uploads_use_content_and_validate_enabled_settings() {
+    let (client, service, _directory) = client().await;
+    for (bytes, kind) in [
+        (include_bytes!("../../../datalith-core/tests/data/image.png").as_slice(), "image"),
+        (b"Hello world!".as_slice(), "resource"),
+    ] {
+        let response = client
+            .post("/api/v1/uploads")
+            .header(multipart_header())
+            .body(multipart(bytes, Some(json!({"enable_convert_to_image": true}))))
+            .dispatch()
+            .await;
+        assert_eq!(Status::Accepted, response.status());
+        let submitted: Task = response.into_json().await.unwrap();
+        assert_eq!("upload", submitted.kind);
+        let completed = wait_task(&client, submitted).await;
+        assert_eq!(kind, completed.result.unwrap()["kind"]);
+    }
+    let response = client
+        .post("/api/v1/uploads")
+        .header(multipart_header())
+        .body(multipart(b"unused", Some(json!({"kind":"image", "enable_convert_to_image":true}))))
+        .dispatch()
+        .await;
+    assert_eq!(Status::BadRequest, response.status());
     service.close().await.unwrap();
 }
 

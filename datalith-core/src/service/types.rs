@@ -303,21 +303,43 @@ impl Default for ImageLimits {
 pub struct UploadOptions {
     /// The kind of media to create.
     #[cfg_attr(feature = "openapi", schema(default = json!("resource")))]
-    pub kind:      MediaKind,
+    pub kind:                    MediaKind,
+    /// Convert detected images when `kind` is `Resource`.
+    #[serde(skip_serializing_if = "is_false")]
+    #[cfg_attr(feature = "openapi", schema(default = json!(false)))]
+    pub enable_convert_to_image: bool,
+    /// Convert detected audio when `kind` is `Resource`.
+    #[serde(skip_serializing_if = "is_false")]
+    #[cfg_attr(feature = "openapi", schema(default = json!(false)))]
+    pub enable_convert_to_audio: bool,
+    /// Convert detected video when `kind` is `Resource`.
+    #[serde(skip_serializing_if = "is_false")]
+    #[cfg_attr(feature = "openapi", schema(default = json!(false)))]
+    pub enable_convert_to_video: bool,
     /// The name of the media; the task ID is used when it is missing.
-    pub file_name: Option<String>,
+    pub file_name:               Option<String>,
     /// The MIME type of a resource; it is detected when it is missing.
-    pub file_type: Option<String>,
+    pub file_type:               Option<String>,
     /// How long the media is kept.
-    pub retention: Retention,
-    /// Image options, used when `kind` is `Image`.
-    pub image:     ImageOptions,
-    /// Audio options, used when `kind` is `Audio`.
+    pub retention:               Retention,
+    /// Image options, used for an image kind or enabled image conversion.
+    pub image:                   ImageOptions,
+    /// Audio options, used for an audio kind or enabled audio conversion.
     #[serde(skip_serializing_if = "AudioOptions::is_default")]
-    pub audio:     AudioOptions,
-    /// Video options, used when `kind` is `Video`.
+    pub audio:                   AudioOptions,
+    /// Video options, used for a video kind or enabled video conversion.
     #[serde(skip_serializing_if = "VideoOptions::is_default")]
-    pub video:     VideoOptions,
+    pub video:                   VideoOptions,
+}
+
+impl UploadOptions {
+    pub(super) fn automatic(&self) -> bool {
+        self.enable_convert_to_image || self.enable_convert_to_audio || self.enable_convert_to_video
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// A stored file of a media item.
@@ -567,7 +589,7 @@ pub struct TaskError {
 pub struct Task {
     /// The task ID.
     pub id:              Uuid,
-    /// The job kind, such as `image`, `video`, `import`, or `mp4_export`.
+    /// The job kind, such as `upload`, `image`, `video`, `import`, or `mp4_export`.
     #[cfg_attr(feature = "openapi", schema(schema_with = super::openapi::task_kind))]
     pub kind:            String,
     /// The state of the task.

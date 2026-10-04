@@ -1,6 +1,7 @@
 mod archive;
 #[cfg(feature = "av-convert")]
 mod av_processor;
+mod classification;
 mod hls;
 #[cfg(feature = "image-convert")]
 mod image_processor;
