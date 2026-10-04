@@ -147,6 +147,85 @@ async fn upload_download_ranges_and_conditional_requests() {
 }
 
 #[rocket::async_test]
+async fn docs_serve_the_generated_api_and_embedded_swagger_ui() {
+    let (client, service, _directory) = client().await;
+    let response = client.get("/api/v1/docs").dispatch().await;
+    assert_eq!(Status::PermanentRedirect, response.status());
+    assert_eq!(Some("docs/"), response.headers().get_one("Location"));
+    drop(response);
+
+    let response = client.get("/api/v1/docs/").dispatch().await;
+    assert_eq!(Status::Ok, response.status());
+    assert!(response.into_string().await.unwrap().contains("Swagger UI"));
+    let response = client.get("/api/v1/docs/swagger-ui-bundle.js").dispatch().await;
+    assert_eq!(Status::Ok, response.status());
+    assert!(response.into_string().await.unwrap().contains("SwaggerUIBundle"));
+    let response = client.get("/api/v1/docs/swagger-initializer.js").dispatch().await;
+    assert_eq!(Status::Ok, response.status());
+    let initializer = response.into_string().await.unwrap();
+    assert!(initializer.contains("json"));
+    assert!(initializer.contains("validatorUrl"));
+
+    let response = client.get("/api/v1/docs/json").dispatch().await;
+    assert_eq!(Status::Ok, response.status());
+    let document: Value = response.into_json().await.unwrap();
+    assert_eq!("3.1.0", document["openapi"]);
+    assert_eq!("..", document["servers"][0]["url"]);
+    assert_eq!("getOpenApi", document["paths"]["/docs/json"]["get"]["operationId"]);
+    assert!(document["paths"]["/media/{id}/hls/{track}/init.mp4"]["get"].is_object());
+    assert!(
+        document["paths"]["/media/{id}/hls/{track}/segment-{sequence}.m4s"]["head"].is_object()
+    );
+    assert_eq!(
+        "application/json",
+        document["paths"]["/uploads"]["post"]["requestBody"]["content"]["multipart/form-data"]
+            ["encoding"]["options"]["contentType"]
+    );
+
+    fn check_references(value: &Value, document: &Value) {
+        match value {
+            Value::Object(object) => {
+                if let Some(Value::String(reference)) = object.get("$ref") {
+                    assert!(
+                        document.pointer(reference.strip_prefix('#').unwrap()).is_some(),
+                        "Missing schema: {reference}"
+                    );
+                }
+                for value in object.values() {
+                    check_references(value, document);
+                }
+            },
+            Value::Array(values) => {
+                for value in values {
+                    check_references(value, document);
+                }
+            },
+            _ => (),
+        }
+    }
+    check_references(&document, &document);
+    for path in document["paths"].as_object().unwrap().values() {
+        if let Some(responses) = path["head"]["responses"].as_object() {
+            for response in responses.values() {
+                assert!(response.get("content").is_none());
+            }
+        }
+    }
+    let response = client.get("/api/v1/capabilities").dispatch().await;
+    let capabilities: Value = response.into_json().await.unwrap();
+    serde_json::from_value::<super::openapi::Capabilities>(capabilities).unwrap();
+    let submitted = upload(&client, json!({})).await;
+    let completed = wait_task(&client, submitted).await;
+    serde_json::from_value::<super::openapi::TaskResult>(completed.result.unwrap()).unwrap();
+
+    let response = client.get("/api/v1/openapi.json").dispatch().await;
+    assert_eq!(Status::PermanentRedirect, response.status());
+    assert_eq!(Some("docs/json"), response.headers().get_one("Location"));
+    drop(response);
+    service.close().await.unwrap();
+}
+
+#[rocket::async_test]
 async fn head_does_not_consume_single_use_content() {
     let (client, service, _directory) = client().await;
     upload(&client, json!({"retention": {"single_use": true, "expires_in_seconds": 60}})).await;

@@ -59,6 +59,7 @@ impl ServiceError {
 }
 
 /// The kind of a media item.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaKind {
@@ -74,6 +75,7 @@ pub enum MediaKind {
 }
 
 /// Whether compliant uploaded content can be reused.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessingMode {
@@ -91,6 +93,7 @@ impl ProcessingMode {
 }
 
 /// How an output was created.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessingMethod {
@@ -112,38 +115,49 @@ impl ProcessingMethod {
 }
 
 /// How long uploaded media is kept.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Retention {
     /// Remove the media after this many seconds, from 1 to 36,000,000.
+    #[cfg_attr(feature = "openapi", schema(minimum = 1, maximum = 36000000))]
     pub expires_in_seconds: Option<u64>,
     /// Allow one content GET for images/resources, or one playback claim for audio/video.
+    #[cfg_attr(feature = "openapi", schema(default = json!(false)))]
     pub single_use:         bool,
 }
 
 /// The width-to-height ratio of a center crop.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CropRatio {
     /// The width part of the ratio.
+    #[cfg_attr(feature = "openapi", schema(exclusive_minimum = 0))]
     pub width:  f64,
     /// The height part of the ratio.
+    #[cfg_attr(feature = "openapi", schema(exclusive_minimum = 0))]
     pub height: f64,
 }
 
 /// A recipe for one named set of image outputs.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ImageVariantSpec {
     /// The variant name: 1 to 64 ASCII letters, digits, `_`, or `-`, and not `original`.
+    #[cfg_attr(feature = "openapi", schema(min_length = 1, max_length = 64, pattern = "^[A-Za-z0-9_-]+$", default = json!("default")))]
     pub name:        String,
     /// The maximum width of the 1x output in pixels.
+    #[cfg_attr(feature = "openapi", schema(minimum = 1))]
     pub max_width:   Option<u32>,
     /// The maximum height of the 1x output in pixels.
+    #[cfg_attr(feature = "openapi", schema(minimum = 1))]
     pub max_height:  Option<u32>,
     /// Crop the center of the image to this ratio first.
     pub crop:        Option<CropRatio>,
     /// The output scales; they must be unique and include 1.
+    #[cfg_attr(feature = "openapi", schema(min_items = 1, default = json!([1,2,3])))]
     pub multipliers: Vec<u8>,
 }
 
@@ -160,6 +174,7 @@ impl Default for ImageVariantSpec {
 }
 
 /// Options for image processing.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ImageOptions {
@@ -167,8 +182,10 @@ pub struct ImageOptions {
     #[serde(skip_serializing_if = "ProcessingMode::is_default")]
     pub processing_mode: ProcessingMode,
     /// The variants to create.
+    #[cfg_attr(feature = "openapi", schema(min_items = 1, default = json!([{"name":"default","multipliers":[1,2,3]}])))]
     pub variants:        Vec<ImageVariantSpec>,
     /// Keep the uploaded file as the original.
+    #[cfg_attr(feature = "openapi", schema(default = json!(true)))]
     pub save_original:   bool,
 }
 
@@ -183,16 +200,20 @@ impl Default for ImageOptions {
 }
 
 /// Options for standalone audio processing.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AudioOptions {
     /// Reuse compliant streams when set to `Trust`.
     pub processing_mode:   ProcessingMode,
     /// Keep the uploaded file as the original.
+    #[cfg_attr(feature = "openapi", schema(default = json!(false)))]
     pub save_original:     bool,
     /// Preserve lossless source samples in FLAC when possible, with AAC fallback.
+    #[cfg_attr(feature = "openapi", schema(default = json!(false)))]
     pub preserve_lossless: bool,
     /// The source stream index; otherwise use the default audio stream or the first one.
+    #[cfg_attr(feature = "openapi", schema(minimum = 0, maximum = 4294967295u64))]
     pub audio_stream:      Option<u32>,
 }
 
@@ -203,28 +224,36 @@ impl AudioOptions {
 }
 
 /// One requested video resolution and frame-rate pair.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VideoVariantSpec {
     /// The horizontal canvas tier, such as 720 or 1080.
+    #[cfg_attr(feature = "openapi", schema(schema_with = super::openapi::video_resolution))]
     pub resolution: u16,
     /// The frame-rate tier, such as 30 or 60.
+    #[cfg_attr(feature = "openapi", schema(schema_with = super::openapi::video_fps))]
     pub fps:        u8,
 }
 
 /// Options for video processing.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct VideoOptions {
     /// Reuse compliant streams when set to `Trust`.
     pub processing_mode:   ProcessingMode,
     /// Keep the uploaded file as the original.
+    #[cfg_attr(feature = "openapi", schema(default = json!(false)))]
     pub save_original:     bool,
     /// The requested resolution and frame-rate pairs; there is no default ladder.
+    #[cfg_attr(feature = "openapi", schema(required = true, min_items = 1, max_items = 16))]
     pub variants:          Vec<VideoVariantSpec>,
     /// Preserve lossless source audio in FLAC when possible, with AAC fallback.
+    #[cfg_attr(feature = "openapi", schema(default = json!(false)))]
     pub preserve_lossless: bool,
     /// The source audio stream index; otherwise use the default audio stream or the first one.
+    #[cfg_attr(feature = "openapi", schema(minimum = 0, maximum = 4294967295u64))]
     pub audio_stream:      Option<u32>,
 }
 
@@ -235,17 +264,23 @@ impl VideoOptions {
 }
 
 /// Limits that protect the service from very large images.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageLimits {
     /// The maximum pixel count of one frame.
+    #[cfg_attr(feature = "openapi", schema(minimum = 0))]
     pub max_pixels:       u64,
     /// The maximum number of frames.
+    #[cfg_attr(feature = "openapi", schema(minimum = 0))]
     pub max_frames:       u32,
     /// The maximum pixel count of all frames together.
+    #[cfg_attr(feature = "openapi", schema(minimum = 0))]
     pub max_total_pixels: u64,
     /// The maximum number of variants in one request.
+    #[cfg_attr(feature = "openapi", schema(minimum = 0))]
     pub max_variants:     usize,
     /// The largest allowed output scale.
+    #[cfg_attr(feature = "openapi", schema(minimum = 0))]
     pub max_multiplier:   u8,
 }
 
@@ -262,10 +297,12 @@ impl Default for ImageLimits {
 }
 
 /// Options for an upload.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UploadOptions {
     /// The kind of media to create.
+    #[cfg_attr(feature = "openapi", schema(default = json!("resource")))]
     pub kind:      MediaKind,
     /// The name of the media; the task ID is used when it is missing.
     pub file_name: Option<String>,
@@ -284,13 +321,16 @@ pub struct UploadOptions {
 }
 
 /// A stored file of a media item.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaFile {
     /// The file ID.
     pub id:        Uuid,
     /// The SHA-256 hash in lowercase hex.
+    #[cfg_attr(feature = "openapi", schema(pattern = "^[a-f0-9]{64}$"))]
     pub sha256:    String,
     /// The size in bytes, as a decimal string.
+    #[cfg_attr(feature = "openapi", schema(pattern = "^[0-9]+$"))]
     pub file_size: String,
     /// The MIME type.
     pub file_type: String,
@@ -299,6 +339,7 @@ pub struct MediaFile {
 }
 
 /// One generated image file.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Variant {
     /// How the file was created; older metadata may not record this.
@@ -307,12 +348,16 @@ pub struct Variant {
     /// The name of the recipe that created this file.
     pub name:              String,
     /// The output scale.
+    #[cfg_attr(feature = "openapi", schema(minimum = 1))]
     pub multiplier:        u8,
     /// The output format, such as `webp`, `png`, `jpeg`, or `gif`.
+    #[cfg_attr(feature = "openapi", schema(schema_with = super::openapi::variant_format))]
     pub format:            String,
     /// The width in pixels.
+    #[cfg_attr(feature = "openapi", schema(minimum = 1))]
     pub width:             u32,
     /// The height in pixels.
+    #[cfg_attr(feature = "openapi", schema(minimum = 1))]
     pub height:            u32,
     /// Whether the file has more than one frame.
     pub animated:          bool,
@@ -321,67 +366,87 @@ pub struct Variant {
     /// The API path that downloads this file.
     pub content_path:      String,
     /// The recipe that created this file; migrated images have none.
+    #[cfg_attr(feature = "openapi", schema(required = true))]
     pub recipe:            Option<ImageVariantSpec>,
 }
 
 /// An exact frame rate or time ratio.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rational {
     /// The numerator.
+    #[cfg_attr(feature = "openapi", schema(minimum = 0, maximum = 4294967295u64))]
     pub numerator:   u32,
     /// The nonzero denominator.
+    #[cfg_attr(feature = "openapi", schema(minimum = 1, maximum = 4294967295u64))]
     pub denominator: u32,
 }
 
 /// An audio output, either a standalone file or an HLS track.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioVariant {
     /// The output identifier, also used as the HLS track identifier.
     pub id:                String,
     /// The codec, such as `aac` or `flac`.
+    #[cfg_attr(feature = "openapi", schema(schema_with = super::openapi::audio_variant_codec))]
     pub codec:             String,
     /// The average encoded bitrate in bits per second.
+    #[cfg_attr(feature = "openapi", schema(minimum = 0))]
     pub bitrate:           u64,
     /// The sample rate in Hz.
+    #[cfg_attr(feature = "openapi", schema(minimum = 1))]
     pub sample_rate:       u32,
     /// The channel count.
+    #[cfg_attr(feature = "openapi", schema(minimum = 1))]
     pub channels:          u16,
     /// The number of significant bits per sample for lossless outputs.
+    #[cfg_attr(feature = "openapi", schema(required = true, minimum = 1, maximum = 255))]
     pub bits_per_sample:   Option<u8>,
     /// How the encoded samples were created.
     pub processing_method: ProcessingMethod,
     /// A file for standalone audio; HLS outputs have none.
+    #[cfg_attr(feature = "openapi", schema(required = true))]
     pub file:              Option<MediaFile>,
     /// The content path for standalone audio, or the HLS track playlist path.
     pub content_path:      String,
 }
 
 /// Standalone audio metadata without HLS segment details.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioMedia {
     /// The presentation duration in seconds.
+    #[cfg_attr(feature = "openapi", schema(minimum = 0))]
     pub duration_seconds: f64,
     /// The available AAC and FLAC outputs.
+    #[cfg_attr(feature = "openapi", schema(min_items = 1))]
     pub variants:         Vec<AudioVariant>,
 }
 
 /// One generated video stream.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoVariant {
     /// The output identifier, also used as the HLS track identifier.
     pub id:                   String,
     /// The effective resolution tier.
+    #[cfg_attr(feature = "openapi", schema(schema_with = super::openapi::video_resolution))]
     pub resolution:           u16,
     /// The horizontal canvas width in pixels.
+    #[cfg_attr(feature = "openapi", schema(minimum = 1))]
     pub width:                u32,
     /// The horizontal canvas height in pixels.
+    #[cfg_attr(feature = "openapi", schema(minimum = 1))]
     pub height:               u32,
     /// The effective frame-rate tier.
+    #[cfg_attr(feature = "openapi", schema(schema_with = super::openapi::video_fps))]
     pub fps:                  u8,
     /// The nominal frame cadence; held endpoint frames can last longer.
     pub frame_rate:           Rational,
     /// How long the first picture is held before the source video starts.
     #[serde(default, skip_serializing_if = "is_zero")]
+    #[cfg_attr(feature = "openapi", schema(minimum = 0, default = json!(0)))]
     pub leading_hold_seconds: f64,
     /// The HLS codec string, including the H.264 profile and level.
     pub codec:                String,
@@ -394,11 +459,14 @@ pub struct VideoVariant {
 }
 
 /// Video metadata without HLS segment details.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoMedia {
     /// The presentation duration in seconds.
+    #[cfg_attr(feature = "openapi", schema(minimum = 0))]
     pub duration_seconds: f64,
     /// The generated video streams.
+    #[cfg_attr(feature = "openapi", schema(min_items = 1))]
     pub variants:         Vec<VideoVariant>,
     /// The shared audio streams; their standalone file fields are empty.
     pub audio:            Vec<AudioVariant>,
@@ -407,6 +475,7 @@ pub struct VideoMedia {
 }
 
 /// A recoverable limitation reported in a successful processing result.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessingWarning {
     /// A stable code, such as `lossless_not_preserved`.
@@ -416,6 +485,7 @@ pub struct ProcessingWarning {
 }
 
 /// A stored media item.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Media {
     /// The media ID.
@@ -427,6 +497,7 @@ pub struct Media {
     /// The name of the media.
     pub file_name:   String,
     /// The original file, if it was kept.
+    #[cfg_attr(feature = "openapi", schema(required = true))]
     pub original:    Option<MediaFile>,
     /// The generated image files.
     pub variants:    Vec<Variant>,
@@ -440,18 +511,22 @@ pub struct Media {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings:    Vec<ProcessingWarning>,
     /// The time when the media expires.
+    #[cfg_attr(feature = "openapi", schema(required = true))]
     pub expires_at:  Option<DateTime<Utc>>,
     /// Whether this media allows one GET or one fixed playback-session claim.
     pub single_use:  bool,
     /// The time when the single-use content was downloaded.
+    #[cfg_attr(feature = "openapi", schema(required = true))]
     pub consumed_at: Option<DateTime<Utc>>,
     /// Whether the source image is animated.
     pub animated:    bool,
     /// The number of frames in the source image.
+    #[cfg_attr(feature = "openapi", schema(minimum = 0))]
     pub frame_count: u32,
 }
 
 /// The state of a task.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
@@ -477,6 +552,7 @@ impl TaskStatus {
 }
 
 /// The reason why a task did not succeed.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskError {
     /// The error code, such as `invalid_request`.
@@ -486,42 +562,53 @@ pub struct TaskError {
 }
 
 /// A background job, such as an upload, an import, or an export.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     /// The task ID.
     pub id:              Uuid,
-    /// The job kind: `resource`, `image`, `import`, or `export`.
+    /// The job kind, such as `image`, `video`, `import`, or `mp4_export`.
+    #[cfg_attr(feature = "openapi", schema(schema_with = super::openapi::task_kind))]
     pub kind:            String,
     /// The state of the task.
     pub status:          TaskStatus,
     /// A short word for the current step.
     pub stage:           String,
     /// The number of finished work units.
+    #[cfg_attr(feature = "openapi", schema(minimum = 0))]
     pub completed_units: u64,
     /// The total number of work units, when it is known.
+    #[cfg_attr(feature = "openapi", schema(required = true, minimum = 0))]
     pub total_units:     Option<u64>,
     /// How many times a worker has started this task.
+    #[cfg_attr(feature = "openapi", schema(minimum = 0))]
     pub attempt:         u32,
     /// The time when the task was created.
     pub created_at:      DateTime<Utc>,
     /// The time when the task last changed.
     pub updated_at:      DateTime<Utc>,
     /// The result of a successful task.
+    #[cfg_attr(feature = "openapi", schema(required = true))]
     pub result:          Option<serde_json::Value>,
     /// The error of a failed or cancelled task.
+    #[cfg_attr(feature = "openapi", schema(required = true))]
     pub error:           Option<TaskError>,
 }
 
 /// One page of a list.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Page<T> {
     /// The items on this page.
     pub items:    Vec<T>,
     /// The page number, starting from 1.
+    #[cfg_attr(feature = "openapi", schema(minimum = 1))]
     pub page:     u64,
     /// The number of items per page.
+    #[cfg_attr(feature = "openapi", schema(minimum = 1, maximum = 100))]
     pub per_page: u64,
     /// The total number of items, as a decimal string.
+    #[cfg_attr(feature = "openapi", schema(pattern = "^[0-9]+$"))]
     pub total:    String,
 }
 
@@ -599,19 +686,23 @@ pub struct ContentRequest {
 }
 
 /// Options for an export.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ExportOptions {
     /// The media to export; all media are exported when it is missing.
+    #[cfg_attr(feature = "openapi", schema(min_items = 1, max_items = 100000))]
     pub ids: Option<Vec<Uuid>>,
 }
 
 /// Options for processing the retained original of existing media.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProcessOptions {
     /// The output media kind; the default is `Image` for older clients.
     #[serde(skip_serializing_if = "is_image_kind")]
+    #[cfg_attr(feature = "openapi", schema(default = json!("image"), schema_with = super::openapi::process_options_kind))]
     pub kind:  MediaKind,
     /// The image options.
     pub image: ImageOptions,
@@ -643,14 +734,17 @@ impl Default for ProcessOptions {
 }
 
 /// Options for remuxing an existing video variant into MP4.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mp4ExportOptions {
     /// The identifier of an existing video variant.
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
     pub variant: String,
 }
 
 /// The result of remuxing an existing video variant into MP4.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mp4ExportResult {
     /// The source media identifier.
@@ -658,6 +752,7 @@ pub struct Mp4ExportResult {
     /// The selected video variant.
     pub variant:       String,
     /// The selected audio profile, when the source has audio.
+    #[cfg_attr(feature = "openapi", schema(required = true, schema_with = super::openapi::mp4_export_result_audio))]
     pub audio:         Option<String>,
     /// The completed artifact metadata.
     pub artifact:      MediaFile,
@@ -680,9 +775,14 @@ pub(super) struct Mp4Work {
 }
 
 /// The result of claiming a single-use playback session.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybackSession {
     /// The secret credential used to read the media and its exports.
+    #[cfg_attr(
+        feature = "openapi",
+        schema(min_length = 64, max_length = 64, pattern = "^[a-f0-9]{64}$")
+    )]
     pub token:      String,
     /// The time when this fixed session expires.
     pub expires_at: DateTime<Utc>,

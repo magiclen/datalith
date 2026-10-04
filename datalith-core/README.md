@@ -325,6 +325,9 @@ Migration does not rebuild thumbnails or guess old crop settings.
 
 ## Build features
 
+The optional `openapi` feature adds utoipa schemas to the service's request and response types.
+The HTTP service enables it automatically; core-only builds can leave it disabled.
+
 Rust 1.94 or later is required, and CI checks Rust 1.94.1.
 The default features are `magic`, `image-convert`, `av-convert`, and `manager`.
 `manager` provides the older cleanup scheduler; the new service task queue does not need it.

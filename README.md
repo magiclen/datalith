@@ -28,7 +28,7 @@ Images keep the original upload by default, while audio and video do not.
 Set `save_original` when later reprocessing is needed.
 
 See the [HTTP and CLI guide](datalith/README.md) and the [Rust API guide](datalith-core/README.md).
-A running service also provides `/api/v1/openapi.json` and `/api/v1/capabilities`.
+A running service provides Swagger UI at `/api/v1/docs`, its generated OpenAPI JSON at `/api/v1/docs/json`, and feature information at `/api/v1/capabilities`.
 The minimal [browser player example](examples/player/README.md) is served at `/api/v1/player`.
 See [FFmpeg build and distribution](FFMPEG.md) for fixed source versions, checksums, licenses, and the source bundle.
 The old [Node.js client](https://github.com/magiclen/node-datalith) does not support this API.

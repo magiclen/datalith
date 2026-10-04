@@ -42,6 +42,7 @@ regex = { version = "1", optional = true }
 
 serde.workspace = true
 serde_json.workspace = true
+utoipa = { workspace = true, optional = true }
 thiserror = "2"
 tar = "0.4"
 tempfile = "3"
@@ -60,6 +61,7 @@ magic = ["dep:magic"]
 image-convert = ["dep:image-convert", "dep:regex", "dep:resvg", "dep:flate2"]
 av-convert = ["tokio/process", "dep:libc"]
 manager = ["dep:tokio-cron-scheduler"]
+openapi = ["dep:utoipa"]
 
 [package.metadata.docs.rs]
 all-features = true

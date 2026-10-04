@@ -13,7 +13,7 @@ license = "MIT"
 include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE"]
 
 [dependencies]
-datalith-core = { version = "0.2", path = "../datalith-core", default-features = false }
+datalith-core = { version = "0.2", path = "../datalith-core", default-features = false, features = ["openapi"] }
 
 clap = { version = "4", features = ["derive", "env"] }
 terminal_size = "0.4"
@@ -23,6 +23,9 @@ anyhow = "1"
 tokio.workspace = true
 
 serde_json.workspace = true
+serde.workspace = true
+utoipa = { workspace = true, features = ["rocket_extras"] }
+utoipa-swagger-ui = { version = "10", features = ["rocket", "vendored", "minified"] }
 url-escape = "0.1"
 byte-unit = "5"
 

@@ -1,4 +1,5 @@
 mod content;
+mod openapi;
 mod routes;
 
 #[cfg(test)]
@@ -15,6 +16,11 @@ use rocket::{
     response::{self, Responder},
 };
 use serde_json::json;
+use utoipa_swagger_ui::{Config as SwaggerConfig, SwaggerUi};
+
+fn swagger_config() -> SwaggerConfig<'static> {
+    SwaggerConfig::new(["json"]).validator_url("none")
+}
 
 #[derive(Debug)]
 pub(crate) struct ServerConfig {
@@ -183,6 +189,8 @@ pub fn create(address: IpAddr, port: u16, max_file_size: u64) -> Rocket<Build> {
             routes::delete,
             routes::capabilities,
             routes::openapi,
+            routes::legacy_openapi,
+            routes::docs,
             routes::player,
             routes::playback_session,
             routes::mp4_export,
@@ -197,4 +205,5 @@ pub fn create(address: IpAddr, port: u16, max_file_size: u64) -> Rocket<Build> {
             content::get_artifact,
             content::head_artifact,
         ])
+        .mount("/", SwaggerUi::new("/api/v1/docs/<_..>").config(swagger_config()))
 }

@@ -6,6 +6,8 @@ mod hls;
 mod image_processor;
 pub(crate) mod migration;
 mod mp4_export;
+#[cfg(feature = "openapi")]
+mod openapi;
 mod sessions;
 mod store;
 #[cfg(feature = "image-convert")]
