@@ -648,6 +648,7 @@ dependencies = [
  "hex",
  "image-convert",
  "lazy-static-include",
+ "libc",
  "magic",
  "manifest-dir-macros",
  "mime",

@@ -18,7 +18,9 @@ use image_convert::{
 };
 use uuid::Uuid;
 
-use super::{ImageLimits, ImageOptions, ImageVariantSpec, ServiceError};
+use super::{
+    ImageLimits, ImageOptions, ImageVariantSpec, ProcessingMethod, ProcessingMode, ServiceError,
+};
 
 pub(crate) struct ProcessedImage {
     pub variants:      Vec<ProcessedVariant>,
@@ -28,14 +30,15 @@ pub(crate) struct ProcessedImage {
 }
 
 pub(crate) struct ProcessedVariant {
-    pub spec:       ImageVariantSpec,
-    pub multiplier: u8,
-    pub format:     String,
-    pub width:      u32,
-    pub height:     u32,
-    pub animated:   bool,
-    pub path:       PathBuf,
-    pub mime:       String,
+    pub processing_method: ProcessingMethod,
+    pub spec:              ImageVariantSpec,
+    pub multiplier:        u8,
+    pub format:            String,
+    pub width:             u32,
+    pub height:            u32,
+    pub animated:          bool,
+    pub path:              PathBuf,
+    pub mime:              String,
 }
 
 fn image_error(error: impl std::fmt::Display) -> ServiceError {
@@ -282,10 +285,28 @@ pub(crate) fn process_image(
             other => format!("image/{}", other.to_ascii_lowercase()),
         }
     };
+    let original_path = source.to_path_buf();
+    let source_format = match ping.format.as_str() {
+        "JPG" | "JPEG" => "jpeg",
+        "PNG" => "png",
+        "WEBP" => "webp",
+        "GIF" => "gif",
+        _ => "",
+    };
+    let mut can_reuse = options.processing_mode == ProcessingMode::Trust && svg.is_none();
     wand.reset_iterator();
     let mut max_width = 0;
     let mut max_height = 0;
     while wand.next_image() {
+        can_reuse &= matches!(
+            wand.get_image_orientation(),
+            image_convert::magick_rust::OrientationType::Undefined
+                | image_convert::magick_rust::OrientationType::TopLeft
+        ) && matches!(
+            wand.get_image_colorspace(),
+            image_convert::magick_rust::ColorspaceType::sRGB
+                | image_convert::magick_rust::ColorspaceType::GRAY
+        ) && (source_format != "jpeg" || wand.get_image_depth() <= 8);
         let (page_width, page_height, x, y) = wand.get_image_page();
         max_width =
             max_width.max(page_width.max(wand.get_image_width().saturating_add(x.max(0) as usize)));
@@ -348,6 +369,26 @@ pub(crate) fn process_image(
                 if animated { &["webp", "gif", fallback] } else { &["webp", fallback] };
             for format in formats {
                 check_cancel(cancel)?;
+                if can_reuse
+                    && (!animated || matches!(*format, "webp" | "gif"))
+                    && spec.crop.is_none()
+                    && width == ping.resolution.width
+                    && height == ping.resolution.height
+                    && *format == source_format
+                {
+                    variants.push(ProcessedVariant {
+                        processing_method: ProcessingMethod::Copied,
+                        spec: spec.clone(),
+                        multiplier,
+                        format: (*format).into(),
+                        width,
+                        height,
+                        animated,
+                        path: original_path.clone(),
+                        mime: original_mime.clone(),
+                    });
+                    continue;
+                }
                 let path = output_dir.join(format!("{}.{}", Uuid::new_v4(), format));
                 let mut output = ImageResource::from_path(&path);
                 match *format {
@@ -378,6 +419,7 @@ pub(crate) fn process_image(
                 .map_err(image_error)?;
                 let actual = identify_ping(&output).map_err(image_error)?;
                 variants.push(ProcessedVariant {
+                    processing_method: ProcessingMethod::Transcoded,
                     spec: spec.clone(),
                     multiplier,
                     format: (*format).into(),

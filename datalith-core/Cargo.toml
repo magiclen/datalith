@@ -46,6 +46,7 @@ thiserror = "2"
 tar = "0.4"
 tempfile = "3"
 hex = "0.4"
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "test-util"] }
@@ -54,9 +55,10 @@ lazy-static-include = "4"
 slash-formatter = "3"
 
 [features]
-default = ["magic", "image-convert", "manager"]
+default = ["magic", "image-convert", "av-convert", "manager"]
 magic = ["dep:magic"]
 image-convert = ["dep:image-convert", "dep:regex", "dep:resvg", "dep:flate2"]
+av-convert = ["tokio/process", "dep:libc"]
 manager = ["dep:tokio-cron-scheduler"]
 
 [package.metadata.docs.rs]

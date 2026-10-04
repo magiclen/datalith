@@ -1,4 +1,6 @@
 mod archive;
+#[cfg(feature = "av-convert")]
+mod av_processor;
 #[cfg(feature = "image-convert")]
 mod image_processor;
 pub(crate) mod migration;
@@ -49,11 +51,13 @@ pub struct Content {
 }
 
 pub(super) struct ServiceInner {
+    #[cfg(feature = "av-convert")]
+    av:             av_processor::executor::Executor,
     datalith:       Datalith,
     config:         ServiceConfig,
     wakeup:         Arc<Notify>,
     stopping:       Arc<Notify>,
-    shutdown:       AtomicBool,
+    shutdown:       Arc<AtomicBool>,
     released_files: Mutex<HashSet<Uuid>>,
     cancellations:  Mutex<HashMap<Uuid, Arc<AtomicBool>>>,
     workers:        AsyncMutex<Vec<JoinHandle<()>>>,
@@ -72,6 +76,7 @@ impl DatalithService {
             || config.task_retention_seconds == 0
             || config.av.bitrate == 0
             || config.av.max_processes == 0
+            || config.av.max_processes > 64
             || config.av.encoder_threads == 0
             || config.playback_session_seconds == 0
             || config.mp4_export_retention_seconds == 0
@@ -82,6 +87,9 @@ impl DatalithService {
         tokio::task::spawn_blocking(image_processor::configure_resources)
             .await
             .map_err(|error| ServiceError::Internal(error.to_string()))??;
+        let shutdown = Arc::new(AtomicBool::new(false));
+        #[cfg(feature = "av-convert")]
+        let av = av_processor::executor::Executor::discover(&config.av, shutdown.clone()).await;
         if datalith
             .0
             ._service_active
@@ -91,11 +99,13 @@ impl DatalithService {
             return Err(ServiceError::Conflict("a service already owns this database".into()));
         }
         let service = Self(Arc::new(ServiceInner {
+            #[cfg(feature = "av-convert")]
+            av,
             datalith,
             config,
             wakeup: Arc::new(Notify::new()),
             stopping: Arc::new(Notify::new()),
-            shutdown: AtomicBool::new(false),
+            shutdown,
             released_files: Mutex::new(HashSet::new()),
             cancellations: Mutex::new(HashMap::new()),
             workers: AsyncMutex::new(Vec::new()),
@@ -124,9 +134,17 @@ impl DatalithService {
 
     /// Describe the features and limits of this service as JSON.
     pub fn capabilities(&self) -> serde_json::Value {
+        #[cfg(feature = "av-convert")]
+        let av = self.0.av.available;
+        #[cfg(not(feature = "av-convert"))]
+        let av = false;
+        #[cfg(feature = "av-convert")]
+        let (audio, video) = (av && self.0.av.audio_available, av && self.0.av.video_available);
+        #[cfg(not(feature = "av-convert"))]
+        let (audio, video) = (av, av);
         serde_json::json!({
             "api_version": "1", "version": env!("CARGO_PKG_VERSION"),
-            "media": {"resource": true, "image": cfg!(feature="image-convert"), "audio": false, "video": false},
+            "media": {"resource": true, "image": cfg!(feature="image-convert"), "audio": audio, "video": video},
             "image": {"engine": "image-convert", "animated_inputs": ["gif", "webp", "apng"], "outputs": ["webp", "png", "jpeg", "gif"], "apng_requires_ffmpeg": true, "apng_timing_precision_ms": 10, "limits": self.0.config.image_limits},
             "max_file_size": self.0.config.max_file_size.to_string(),
             "task_retention_seconds": self.0.config.task_retention_seconds,

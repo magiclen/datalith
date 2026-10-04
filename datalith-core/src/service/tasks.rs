@@ -162,8 +162,29 @@ impl DatalithService {
 
     fn validate_upload(&self, options: &UploadOptions) -> Result<(), ServiceError> {
         if matches!(options.kind, MediaKind::Audio | MediaKind::Video) {
+            #[cfg(feature = "av-convert")]
+            {
+                if !self.0.av.available {
+                    return Err(ServiceError::Unsupported(
+                        self.0
+                            .av
+                            .reason
+                            .clone()
+                            .unwrap_or_else(|| "audio and video processing are unavailable".into()),
+                    ));
+                }
+                if options.kind == MediaKind::Audio && !self.0.av.audio_available
+                    || options.kind == MediaKind::Video && !self.0.av.video_available
+                {
+                    return Err(ServiceError::Unsupported(
+                        "the required media encoder or timestamp filter is unavailable".into(),
+                    ));
+                }
+                super::av_processor::validate_options(options)?;
+            }
+            #[cfg(not(feature = "av-convert"))]
             return Err(ServiceError::Unsupported(
-                "audio and video processing are not available".into(),
+                "audio and video processing are disabled".into(),
             ));
         }
         if options.retention.expires_in_seconds.is_some_and(|v| v == 0 || v > 36_000_000) {
@@ -181,11 +202,6 @@ impl DatalithService {
                 .map_err(|_| ServiceError::Invalid("invalid MIME type".into()))?;
         }
         if options.kind == MediaKind::Image {
-            if options.image.processing_mode == super::ProcessingMode::Trust {
-                return Err(ServiceError::Unsupported(
-                    "image trust processing is not available".into(),
-                ));
-            }
             #[cfg(feature = "image-convert")]
             super::image_processor::validate_options(&options.image, &self.0.config.image_limits)?;
             #[cfg(not(feature = "image-convert"))]
@@ -297,13 +313,20 @@ impl DatalithService {
                 kind: match &work {
                     Work::Upload {
                         options, ..
-                    } if options.kind == MediaKind::Image => "image",
-                    Work::Upload {
-                        ..
-                    } => "resource",
+                    } => match options.kind {
+                        MediaKind::Resource => "resource",
+                        MediaKind::Image => "image",
+                        MediaKind::Audio => "audio",
+                        MediaKind::Video => "video",
+                    },
                     Work::Process {
-                        ..
-                    } => "image",
+                        options, ..
+                    } => match options.kind {
+                        MediaKind::Resource => "resource",
+                        MediaKind::Image => "image",
+                        MediaKind::Audio => "audio",
+                        MediaKind::Video => "video",
+                    },
                     Work::Import {
                         ..
                     } => "import",
@@ -409,6 +432,28 @@ impl DatalithService {
         Ok(())
     }
 
+    #[cfg(feature = "av-convert")]
+    pub(super) async fn processing_progress(
+        &self,
+        id: Uuid,
+        stage: &str,
+        completed: u64,
+        total: u64,
+    ) -> Result<(), ServiceError> {
+        let _mutation = self.0.mutations.lock().await;
+        let mut task = self.get_task(id).await?.ok_or(ServiceError::NotFound)?;
+        if task.status == TaskStatus::Cancelling || task.status == TaskStatus::Cancelled {
+            return Err(ServiceError::Cancelled);
+        }
+        if task.status != TaskStatus::Running {
+            return Ok(());
+        }
+        task.stage = stage.into();
+        task.completed_units = completed.min(total);
+        task.total_units = Some(total);
+        self.save_task(&mut task).await
+    }
+
     pub(super) async fn complete_task_tx(
         tx: &mut Transaction<'_, Sqlite>,
         id: Uuid,
@@ -505,7 +550,12 @@ impl DatalithService {
             | Work::Export(_) => (),
         }
         task.status = TaskStatus::Running;
-        task.stage = if task.kind == "image" { "processing" } else { "storing" }.into();
+        task.stage = if matches!(task.kind.as_str(), "image" | "audio" | "video") {
+            "processing"
+        } else {
+            "storing"
+        }
+        .into();
         task.attempt = task.attempt.saturating_add(1);
         task.updated_at = Utc::now();
         task.total_units = Some(1);
@@ -588,7 +638,11 @@ impl DatalithService {
                             ..
                         } => service.import_archive(id, cancel.clone()).await,
                     };
-                    if let Err(error) = service.finish_task(id, result).await {
+                    if !(service.0.shutdown.load(Ordering::Acquire)
+                        && result.is_err()
+                        && !cancel.load(Ordering::Acquire))
+                        && let Err(error) = service.finish_task(id, result).await
+                    {
                         tracing::error!(task_id=%id, %error, "cannot record task outcome");
                     }
                     if let Err(error) = service.clean_task_files(id, false).await {
@@ -762,10 +816,7 @@ impl DatalithService {
         #[cfg(not(feature = "image-convert"))]
         let _ = &recipe;
         let input = self.work_directory(id).join("input");
-        let output = self.work_directory(id).join("output");
-        if fs::try_exists(&output).await? {
-            fs::remove_dir_all(&output).await?;
-        }
+        let output = self.work_directory(id).join(format!("output-{}", Uuid::new_v4()));
         fs::create_dir(&output).await?;
         let created_at = Utc::now();
         let name = options
@@ -790,6 +841,7 @@ impl DatalithService {
             frame_count: 1,
         };
         let mut prepared = HashMap::new();
+        let mut inventory = None;
         let mut mime =
             options.file_type.clone().unwrap_or_else(|| "application/octet-stream".into());
         if options.kind == MediaKind::Image {
@@ -829,7 +881,7 @@ impl DatalithService {
                     )
                     .await?;
                     media.variants.push(Variant {
-                        processing_method: super::ProcessingMethod::Transcoded,
+                        processing_method: variant.processing_method,
                         name:              variant.spec.name.clone(),
                         multiplier:        variant.multiplier,
                         format:            variant.format.clone(),
@@ -850,12 +902,36 @@ impl DatalithService {
             }
             #[cfg(not(feature = "image-convert"))]
             return Err(ServiceError::Unsupported("image processing is disabled".into()));
+        } else if matches!(options.kind, MediaKind::Audio | MediaKind::Video) {
+            #[cfg(feature = "av-convert")]
+            {
+                let processed = super::av_processor::process(
+                    self, id, &input, &output, &options, &recipe, &cancel,
+                )
+                .await?;
+                mime = processed.original_mime;
+                media.audio = processed.audio;
+                media.video = processed.video;
+                media.warnings = processed.warnings;
+                inventory = processed.inventory;
+                prepared.extend(processed.prepared);
+            }
+            #[cfg(not(feature = "av-convert"))]
+            return Err(ServiceError::Unsupported(
+                "audio and video processing are disabled".into(),
+            ));
         } else if options.file_type.is_none()
             && let Some(detected) = crate::functions::detect_file_type_by_path(&input, false).await
         {
             mime = detected.to_string();
         }
-        if options.kind == MediaKind::Resource || options.image.save_original {
+        let save_original = match options.kind {
+            MediaKind::Resource => true,
+            MediaKind::Image => options.image.save_original,
+            MediaKind::Audio => options.audio.save_original,
+            MediaKind::Video => options.video.save_original,
+        };
+        if save_original {
             let size = match staged.file_size {
                 Some(size) => size,
                 None => fs::metadata(&input).await?.len(),
@@ -893,7 +969,8 @@ impl DatalithService {
         }
         let mut guards = Vec::new();
         let mut tx = self.0.datalith.0.db.begin_with("BEGIN IMMEDIATE").await?;
-        self.publish_media_tx(&mut tx, &mut media, None, &prepared, &mut guards).await?;
+        self.publish_media_tx(&mut tx, &mut media, inventory.as_mut(), &prepared, &mut guards)
+            .await?;
         let result = serde_json::to_value(&media)?;
         Self::complete_task_tx(&mut tx, id, &result).await?;
         tx.commit().await?;

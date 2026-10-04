@@ -369,25 +369,28 @@ pub struct AudioMedia {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoVariant {
     /// The output identifier, also used as the HLS track identifier.
-    pub id:                String,
+    pub id:                   String,
     /// The effective resolution tier.
-    pub resolution:        u16,
+    pub resolution:           u16,
     /// The horizontal canvas width in pixels.
-    pub width:             u32,
+    pub width:                u32,
     /// The horizontal canvas height in pixels.
-    pub height:            u32,
+    pub height:               u32,
     /// The effective frame-rate tier.
-    pub fps:               u8,
-    /// The exact frame rate used by the output.
-    pub frame_rate:        Rational,
+    pub fps:                  u8,
+    /// The nominal frame cadence; held endpoint frames can last longer.
+    pub frame_rate:           Rational,
+    /// How long the first picture is held before the source video starts.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub leading_hold_seconds: f64,
     /// The HLS codec string, including the H.264 profile and level.
-    pub codec:             String,
+    pub codec:                String,
     /// How the encoded video was created.
-    pub processing_method: ProcessingMethod,
+    pub processing_method:    ProcessingMethod,
     /// The API path for this track's HLS playlist.
-    pub playlist_path:     String,
+    pub playlist_path:        String,
     /// The audio identifiers allowed with this video tier.
-    pub audio:             Vec<String>,
+    pub audio:                Vec<String>,
 }
 
 /// Video metadata without HLS segment details.
@@ -624,6 +627,10 @@ fn is_image_kind(kind: &MediaKind) -> bool {
     *kind == MediaKind::Image
 }
 
+fn is_zero(value: &f64) -> bool {
+    *value == 0.0
+}
+
 impl Default for ProcessOptions {
     fn default() -> Self {
         Self {
@@ -671,18 +678,25 @@ impl ProcessingRecipe {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct HlsInventory {
-    pub tracks: Vec<HlsTrack>,
+    pub presentation_start: i64,
+    pub duration:           u64,
+    pub timescale:          u32,
+    pub tracks:             Vec<HlsTrack>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct HlsTrack {
-    pub id:                String,
-    pub initialization:    MediaFile,
-    pub segments:          Vec<HlsSegment>,
-    pub timescale:         u32,
-    pub codec:             String,
-    pub average_bandwidth: u64,
-    pub peak_bandwidth:    u64,
+    pub id:                 String,
+    pub initialization:     MediaFile,
+    pub segments:           Vec<HlsSegment>,
+    pub timescale:          u32,
+    pub codec:              String,
+    pub average_bandwidth:  u64,
+    pub peak_bandwidth:     u64,
+    pub presentation_start: i64,
+    pub presentation_end:   i64,
+    pub skip_samples:       u32,
+    pub discard_padding:    u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

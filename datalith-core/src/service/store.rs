@@ -4,11 +4,11 @@ use std::{
 };
 
 use chrono::Utc;
-#[cfg(feature = "image-convert")]
+#[cfg(any(feature = "image-convert", feature = "av-convert"))]
 use sha2::{Digest, Sha256};
 use sqlx::{Row, Sqlite, Transaction};
 use tokio::fs;
-#[cfg(feature = "image-convert")]
+#[cfg(any(feature = "image-convert", feature = "av-convert"))]
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
@@ -104,6 +104,20 @@ impl DatalithService {
             || request.variant.as_deref() == Some("original")
         {
             media.original.clone().ok_or(ServiceError::NotFound)?
+        } else if media.kind == MediaKind::Audio {
+            let audio = media.audio.as_ref().ok_or(ServiceError::NotFound)?;
+            audio
+                .variants
+                .iter()
+                .find(|variant| {
+                    request.variant.as_deref().is_none_or(|requested| requested == variant.id)
+                        && request.format.as_deref().is_none_or(|format| {
+                            format == variant.codec || format == "m4a" && variant.codec == "aac"
+                        })
+                        && request.multiplier.is_none_or(|multiplier| multiplier == 1)
+                })
+                .and_then(|variant| variant.file.clone())
+                .ok_or(ServiceError::NotFound)?
         } else {
             let name = request
                 .variant
@@ -249,7 +263,7 @@ impl DatalithService {
         Ok(())
     }
 
-    #[cfg(feature = "image-convert")]
+    #[cfg(any(feature = "image-convert", feature = "av-convert"))]
     pub(super) async fn prepare_file(
         path: PathBuf,
         file_type: String,
@@ -565,18 +579,19 @@ mod tests {
             video:       Some(VideoMedia {
                 duration_seconds: 12.0,
                 variants:         vec![VideoVariant {
-                    id:                "1080p30".into(),
-                    resolution:        1080,
-                    width:             1920,
-                    height:            1080,
-                    fps:               30,
-                    frame_rate:        Rational {
+                    id:                   "1080p30".into(),
+                    resolution:           1080,
+                    width:                1920,
+                    height:               1080,
+                    fps:                  30,
+                    frame_rate:           Rational {
                         numerator: 30, denominator: 1
                     },
-                    codec:             "avc1.640028".into(),
-                    processing_method: ProcessingMethod::Remuxed,
-                    playlist_path:     String::new(),
-                    audio:             Vec::new(),
+                    leading_hold_seconds: 0.0,
+                    codec:                "avc1.640028".into(),
+                    processing_method:    ProcessingMethod::Remuxed,
+                    playlist_path:        String::new(),
+                    audio:                Vec::new(),
                 }],
                 audio:            Vec::new(),
                 master_path:      String::new(),
@@ -589,10 +604,13 @@ mod tests {
             frame_count: 1,
         };
         let mut inventory = HlsInventory {
-            tracks: vec![HlsTrack {
-                id:                "1080p30".into(),
-                initialization:    file.clone(),
-                segments:          (0..2)
+            presentation_start: 0,
+            duration:           1_440_000,
+            timescale:          120_000,
+            tracks:             vec![HlsTrack {
+                id:                 "1080p30".into(),
+                initialization:     file.clone(),
+                segments:           (0..2)
                     .map(|index| HlsSegment {
                         file:        file.clone(),
                         start:       index * 720_000,
@@ -600,10 +618,14 @@ mod tests {
                         independent: true,
                     })
                     .collect(),
-                timescale:         120_000,
-                codec:             "avc1.640028".into(),
-                average_bandwidth: 1000,
-                peak_bandwidth:    1000,
+                timescale:          120_000,
+                codec:              "avc1.640028".into(),
+                average_bandwidth:  1000,
+                peak_bandwidth:     1000,
+                presentation_start: 0,
+                presentation_end:   1_440_000,
+                skip_samples:       0,
+                discard_padding:    0,
             }],
         };
         let mut guards = Vec::new();

@@ -201,6 +201,75 @@ async fn named_variants_respect_orientation_and_source_dimensions() {
 }
 
 #[tokio::test]
+async fn trust_reuses_matching_image_files_and_still_provides_webp() {
+    use datalith_core::{ProcessingMethod, ProcessingMode};
+    use image_convert::{JPGConfig, to_jpg};
+    use sha2::{Digest, Sha256};
+
+    let directory = tempfile::tempdir().unwrap();
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    let mut jpeg = ImageResource::Data(Vec::new());
+    let mut background = image_convert::magick_rust::PixelWand::new();
+    background.set_color("white").unwrap();
+    let square = image_convert::magick_rust::MagickWand::new();
+    square.new_image(1000, 1000, &background).unwrap();
+    to_jpg(&mut jpeg, &ImageResource::MagickWand(square), &JPGConfig::default()).unwrap();
+    let source = jpeg.as_u8_slice().unwrap();
+    let media = upload(&service, source, ImageOptions {
+        processing_mode: ProcessingMode::Trust,
+        save_original:   false,
+        variants:        vec![ImageVariantSpec {
+            max_width: Some(1080),
+            max_height: Some(1080),
+            ..ImageVariantSpec::default()
+        }],
+    })
+    .await;
+    assert!(media.original.is_none());
+    assert_eq!(2, media.variants.len());
+    let copied = media.variants.iter().find(|variant| variant.format == "jpeg").unwrap();
+    assert_eq!(ProcessingMethod::Copied, copied.processing_method);
+    assert_eq!((1000, 1000, 1), (copied.width, copied.height, copied.multiplier));
+    assert_eq!(hex::encode(Sha256::digest(source)), copied.file.sha256);
+    assert_eq!(source, variant_bytes(&service, &media, copied).await);
+    assert_eq!(
+        ProcessingMethod::Transcoded,
+        media.variants.iter().find(|variant| variant.format == "webp").unwrap().processing_method
+    );
+
+    let mut webp = ImageResource::Data(Vec::new());
+    to_webp(&mut webp, &jpeg, &WEBPConfig::default()).unwrap();
+    let source = webp.as_u8_slice().unwrap();
+    let media = upload(&service, source, ImageOptions {
+        processing_mode: ProcessingMode::Trust,
+        save_original: false,
+        ..ImageOptions::default()
+    })
+    .await;
+    let copied = media.variants.iter().find(|variant| variant.format == "webp").unwrap();
+    assert_eq!(ProcessingMethod::Copied, copied.processing_method);
+    assert_eq!(hex::encode(Sha256::digest(source)), copied.file.sha256);
+    assert_eq!(source, variant_bytes(&service, &media, copied).await);
+    let media = upload(&service, ORIENTED_JPEG, ImageOptions {
+        processing_mode: ProcessingMode::Trust,
+        ..ImageOptions::default()
+    })
+    .await;
+    assert!(
+        media
+            .variants
+            .iter()
+            .all(|variant| variant.processing_method == ProcessingMethod::Transcoded)
+    );
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn gif_webp_and_apng_keep_animation_with_crops_and_fallbacks() {
     let directory = tempfile::tempdir().unwrap();
     let service = DatalithService::new(

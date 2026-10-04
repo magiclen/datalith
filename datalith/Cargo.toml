@@ -31,8 +31,9 @@ rocket-multipart-form-data = "0.11"
 
 
 [features]
-default = ["magic", "image-convert"]
+default = ["magic", "image-convert", "av-convert"]
 magic = ["datalith-core/magic"]
 image-convert = ["datalith-core/image-convert"]
+av-convert = ["datalith-core/av-convert"]
 [dev-dependencies]
 tempfile = "3"
