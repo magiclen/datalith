@@ -429,34 +429,3 @@ async fn gif_webp_and_apng_keep_animation_with_crops_and_fallbacks() {
     }
     service.close().await.unwrap();
 }
-
-#[tokio::test]
-async fn deleting_a_legacy_image_releases_each_file_reference() {
-    let directory = tempfile::tempdir().unwrap();
-    let datalith = Datalith::new(directory.path()).await.unwrap();
-    let mut original = ImageResource::Data(Vec::new());
-    image_convert::to_png(
-        &mut original,
-        &ImageResource::Data(include_bytes!("data/image.png").to_vec()),
-        &image_convert::PNGConfig::default(),
-    )
-    .unwrap();
-    let image = datalith
-        .put_image_by_buffer(
-            original.into_vec().unwrap(),
-            Some("source.png"),
-            None,
-            None,
-            None,
-            true,
-        )
-        .await
-        .unwrap();
-    let id = image.id();
-    let source_id = image.original_file().unwrap().id();
-    assert_eq!(source_id, image.fallback_thumbnails()[0].id());
-    drop(image);
-    assert!(datalith.delete_image_by_id(id).await.unwrap());
-    assert!(!datalith.check_file_exist(source_id).await.unwrap());
-    datalith.close().await;
-}

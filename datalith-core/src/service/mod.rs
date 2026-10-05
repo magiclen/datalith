@@ -27,7 +27,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use tokio::{
     fs::File,
-    sync::{Mutex as AsyncMutex, Notify, OwnedRwLockReadGuard, RwLock},
+    sync::{Mutex as AsyncMutex, Notify, RwLock},
     task::JoinHandle,
 };
 pub use types::*;
@@ -40,22 +40,21 @@ use crate::{Datalith, guard::OpenGuard};
 pub struct DatalithService(pub(super) Arc<ServiceInner>);
 
 /// An opened file that is ready to be read.
-/// Keep it until the read is done, because it stops the file from being removed.
+/// Keep it until the read is done so the file handle and read guards stay open.
 pub struct Content {
     /// The opened file.
-    pub file:                   File,
+    pub file:               File,
     /// The stored file metadata.
-    pub metadata:               MediaFile,
+    pub metadata:           MediaFile,
     /// The time when the content was created.
-    pub created_at:             DateTime<Utc>,
+    pub created_at:         DateTime<Utc>,
     /// Whether this content belongs to single-use media.
-    pub single_use:             bool,
+    pub single_use:         bool,
     /// Whether this opened content supports repeated reads and byte ranges.
-    pub repeatable:             bool,
+    pub repeatable:         bool,
     /// Whether the content expires, so it must not be cached.
-    pub temporary:              bool,
-    pub(super) _file_guard:     Option<OpenGuard>,
-    pub(super) _artifact_guard: Option<OwnedRwLockReadGuard<()>>,
+    pub temporary:          bool,
+    pub(super) _file_guard: Option<OpenGuard>,
 }
 
 pub(super) struct ServiceInner {
@@ -71,7 +70,7 @@ pub(super) struct ServiceInner {
     workers:        AsyncMutex<Vec<JoinHandle<()>>>,
     writes:         RwLock<()>,
     mutations:      AsyncMutex<()>,
-    artifacts:      Arc<RwLock<()>>,
+    artifacts:      RwLock<()>,
 }
 
 impl DatalithService {
@@ -119,7 +118,7 @@ impl DatalithService {
             workers: AsyncMutex::new(Vec::new()),
             writes: RwLock::new(()),
             mutations: AsyncMutex::new(()),
-            artifacts: Arc::new(RwLock::new(())),
+            artifacts: RwLock::new(()),
         }));
         service.recover_tasks().await?;
         service.collect_garbage().await?;

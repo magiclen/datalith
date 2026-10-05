@@ -12,6 +12,8 @@ You can also select an existing video quality manually.
 
 Enable **Prefer lossless audio** to try available FLAC when the browser supports it and playback has been stable.
 The player returns to AAC if the connection or decoder cannot keep up.
+When frame counts are available, dropping at least 20% of frames in two consecutive five-second windows also returns to AAC.
+Pausing, seeking, and changing sources reset this check, and a fallback waits at least 60 seconds before another FLAC trial.
 Changing between FLAC and AAC may cause a short interruption.
 Native HLS uses the system's quality choices and offers only a manual FLAC trial after support checks.
 

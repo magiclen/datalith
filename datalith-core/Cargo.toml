@@ -14,31 +14,23 @@ include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE"]
 
 [dependencies]
 tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
-tokio-cron-scheduler = { version = "0.15", optional = true }
 
 tracing = "0.1"
 
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "chrono", "uuid"] }
-rdb-pagination = { version = "0.3", features = ["sqlite"] }
 
 chrono = { version = "0.4", features = ["serde"] }
 
-educe = { version = "0.8", default-features = false, features = ["Debug", "Default", "PartialEq", "Eq", "Hash"] }
-
 sha2 = "0.11"
 mime = "0.3"
-mime_guess = "2"
 magic = { version = "0.16", optional = true }
-
 
 uuid = { version = "1", features = ["v4", "serde"] }
 rand = "0.10"
-trim-in-place = "0.2"
 
 image-convert = { version = "0.23", optional = true }
 resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"], optional = true }
 flate2 = { version = "1", optional = true }
-regex = { version = "1", optional = true }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -51,16 +43,12 @@ libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "test-util"] }
-manifest-dir-macros = "0.1"
-lazy-static-include = "4"
-slash-formatter = "3"
 
 [features]
-default = ["magic", "image-convert", "av-convert", "manager"]
+default = ["magic", "image-convert", "av-convert"]
 magic = ["dep:magic"]
-image-convert = ["dep:image-convert", "dep:regex", "dep:resvg", "dep:flate2"]
+image-convert = ["dep:image-convert", "dep:resvg", "dep:flate2"]
 av-convert = ["tokio/process", "dep:libc"]
-manager = ["dep:tokio-cron-scheduler"]
 openapi = ["dep:utoipa"]
 
 [package.metadata.docs.rs]

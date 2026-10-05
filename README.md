@@ -1,6 +1,7 @@
 # Datalith
 
 Datalith is a small service for storing files and preparing media for websites.
+It supports Linux.
 It runs as one instance, with file contents on disk.
 File details, such as names and sizes, are kept in SQLite.
 You do not need a separate database or task server.
@@ -32,7 +33,8 @@ Images are not enlarged; without size settings, the service keeps the source siz
 ### Audio ready for the web
 
 Audio uses AAC-LC at 48 kHz in an M4A file.
-Datalith selects 256 or 128 kbps based on the source to avoid spending too much space on low-bitrate audio.
+Lossless sources use a 256 kbps AAC target.
+For lossy sources, Datalith selects 256 or 128 kbps based on the source to avoid spending too much space on low-bitrate audio.
 For a compatible lossless source, you can keep FLAC at the source sample rate, bit depth, and channel count, with AAC fallback.
 
 ### Video at several quality levels
@@ -56,7 +58,7 @@ Unfinished tasks recover after a service restart.
 ### Move and reuse your media
 
 Export media to an archive and import it into another Datalith service.
-Older data folders are upgraded at startup.
+Data folders from the original version are upgraded at startup.
 Trust mode can reuse files or streams that already meet the output requirements.
 
 ## Start with Docker

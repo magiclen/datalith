@@ -102,7 +102,18 @@ impl Stream {
             bytes: &rbsp, offset: 0
         };
         let profile = bits.read(8)?;
-        bits.read(16)?;
+        let compatibility = bits.read(8)?;
+        let level = bits.read(8)?;
+        if profile != u32::from(bytes[1])
+            || compatibility != u32::from(bytes[2])
+            || level != u32::from(bytes[3])
+        {
+            return None;
+        }
+        // Level 1b uses level 11 with constraint_set3, so do not treat it as level 1.1.
+        if matches!(profile, 66 | 77 | 88) && level == 11 && compatibility & 0x10 != 0 {
+            return None;
+        }
         bits.ue()?;
         if matches!(
             profile,
@@ -218,6 +229,7 @@ impl Stream {
         }
         Some(H264Info {
             codec: format!("avc1.{:02x}{:02x}{:02x}", bytes[1], bytes[2], bytes[3]),
+            profile: bytes[1],
             level: bytes[3],
             references,
             buffering,
@@ -236,6 +248,7 @@ impl Stream {
 pub(super) struct H264Info {
     pub frame_rate:  Option<Rational>,
     pub codec:       String,
+    pub profile:     u8,
     pub level:       u8,
     pub references:  u32,
     pub buffering:   Option<u32>,
@@ -390,7 +403,20 @@ pub(super) async fn inspect(
     })
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy)]
+pub(super) struct BitrateLimit {
+    pub bitrate: u64,
+    pub buffer:  u64,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct VideoLimit {
+    pub limits: [BitrateLimit; 2],
+    pub frame:  f64,
+    pub origin: f64,
+}
+
+#[derive(Clone, Default)]
 pub(super) struct PacketStats {
     pub cadence:         bool,
     pub payload_bytes:   f64,
@@ -408,7 +434,7 @@ pub(super) struct PacketStats {
     previous_dts:        Option<f64>,
     previous_duration:   Option<f64>,
     cadence_anchor:      Option<f64>,
-    bucket_min:          f64,
+    bucket_min:          [f64; 2],
 }
 impl PacketStats {
     pub fn duration(&self, rate: u32) -> f64 {
@@ -426,6 +452,20 @@ impl PacketStats {
     pub fn bitrate(&self, rate: u32) -> u64 {
         (self.bytes as f64 * 8.0 / self.duration(rate).max(0.001)).ceil() as u64
     }
+
+    fn check_envelopes(&mut self, before: u64, dts: f64, limits: [BitrateLimit; 2]) {
+        for (index, limit) in limits.iter().enumerate() {
+            let previous = before as f64 * 8.0 - limit.bitrate as f64 * dts;
+            if self.count == 1 {
+                self.bucket_min[index] = previous;
+            } else {
+                self.bucket_min[index] = self.bucket_min[index].min(previous);
+            }
+            self.envelope &=
+                self.bytes as f64 * 8.0 - limit.bitrate as f64 * dts - self.bucket_min[index]
+                    <= limit.buffer as f64;
+        }
+    }
 }
 
 pub(super) async fn packets(
@@ -433,7 +473,7 @@ pub(super) async fn packets(
     input: &Path,
     stream: &Stream,
     cancel: &AtomicBool,
-    video_limit: Option<(u64, f64, f64)>,
+    video_limit: Option<VideoLimit>,
 ) -> Result<PacketStats, ServiceError> {
     let mut args: Vec<OsString> = ["-v", "error"].into_iter().map(Into::into).collect();
     args.extend(input_options());
@@ -531,7 +571,12 @@ pub(super) async fn packets(
                 }
             }
             stats.discard_padding = number("discard_padding").unwrap_or(0.0) as u32;
-            if let Some((limit, frame, origin)) = video_limit {
+            if let Some(VideoLimit {
+                limits,
+                frame,
+                origin,
+            }) = video_limit
+            {
                 let tolerance = 0.00002f64.max(frame / 1000.0);
                 stats.regular &= (duration - frame).abs() <= tolerance
                     && dts.is_some()
@@ -540,15 +585,7 @@ pub(super) async fn packets(
                         current > previous && (current - previous - frame).abs() <= tolerance
                     });
                 if let Some(dts) = dts {
-                    let previous = before as f64 * 8.0 - limit as f64 * dts;
-                    if stats.count == 1 {
-                        stats.bucket_min = previous;
-                    } else {
-                        stats.bucket_min = stats.bucket_min.min(previous);
-                    }
-                    stats.envelope &=
-                        stats.bytes as f64 * 8.0 - limit as f64 * dts - stats.bucket_min
-                            <= limit as f64 * 2.0;
+                    stats.check_envelopes(before, dts, limits);
                 }
                 if let Some(pts) = pts {
                     let position = (pts - origin) / frame;
@@ -606,4 +643,40 @@ fn avcc_idr(
         offset += length_size as u64 + count;
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_buffer_and_recipe_rate_are_checked_independently() {
+        let recipe = BitrateLimit {
+            bitrate: 1000, buffer: 2000
+        };
+        let source = BitrateLimit {
+            bitrate: 2000, buffer: 1000
+        };
+        let accepted = |limits, packets: &[(f64, u64)]| {
+            let mut stats = PacketStats {
+                envelope: true,
+                ..PacketStats::default()
+            };
+            for &(dts, size) in packets {
+                let before = stats.bytes;
+                stats.bytes += size;
+                stats.count += 1;
+                stats.check_envelopes(before, dts, limits);
+            }
+            stats.envelope
+        };
+        let burst = [(0.0, 64), (0.1, 128)];
+        assert!(accepted([recipe, recipe], &burst));
+        assert!(!accepted([recipe, source], &burst));
+        let sustained: Vec<_> = (0..6).map(|index| (f64::from(index) * 0.6, 120)).collect();
+        assert!(accepted([source, source], &sustained));
+        assert!(!accepted([recipe, source], &sustained));
+        let valid = [(0.0, 64), (1.0, 120), (2.0, 64)];
+        assert!(accepted([recipe, source], &valid));
+    }
 }

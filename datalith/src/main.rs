@@ -8,7 +8,8 @@ use std::{path::Path, time::Duration};
 
 use cli::{Command, get_args};
 use datalith_core::{
-    Datalith, DatalithService, ExportOptions, ServiceConfig, Task, TaskStatus, Uuid,
+    Datalith, DatalithService, ExportOptions, PATH_TEMPORARY_FILE_DIRECTORY, ServiceConfig, Task,
+    TaskStatus, Uuid,
 };
 use tokio::fs::{File, OpenOptions};
 
@@ -59,7 +60,6 @@ fn main() -> anyhow::Result<()> {
     let args = get_args();
     rocket::execute(async move {
         let datalith = Datalith::new(&args.environment).await?;
-        datalith.set_temporary_file_lifespan(args.temporary_file_lifespan);
         let config = ServiceConfig {
             max_file_size:                                       args.max_file_size.as_u64(),
             workers:                                             usize::from(args.workers),
@@ -90,6 +90,7 @@ fn main() -> anyhow::Result<()> {
             #[cfg(not(feature = "image-convert"))]
             image_limits:                                        Default::default(),
         };
+        let temporary_directory = datalith.get_environment().join(PATH_TEMPORARY_FILE_DIRECTORY);
         let service = DatalithService::new(datalith, config).await?;
         let result: anyhow::Result<()> = match args.command.unwrap_or(Command::Serve) {
             Command::Serve => {
@@ -97,6 +98,7 @@ fn main() -> anyhow::Result<()> {
                     args.address,
                     args.listen_port,
                     args.max_file_size.as_u64(),
+                    temporary_directory,
                 )
                 .manage(service.clone());
                 rocket.launch().await.map(|_| ()).map_err(Into::into)

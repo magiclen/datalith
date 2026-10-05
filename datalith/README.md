@@ -1,6 +1,7 @@
 # Datalith service guide
 
 Datalith stores files and prepares images, audio, and video through background tasks.
+The service and Rust library support Linux.
 Start with the [project overview](../README.md) and use this guide when you need to change settings or connect an application.
 
 ## Docker deployment
@@ -150,8 +151,9 @@ New JPEG outputs are progressive; PNG and GIF outputs are interlaced.
 ### Audio
 
 AAC-LC uses 48 kHz, with mono or stereo; other channel layouts are mixed to stereo.
-The service tries 256 kbps first and compares its compressed audio payload with the source over the same duration.
-If the output is larger, it encodes 128 kbps from the source instead; that fallback may still be larger than the source.
+Lossless sources use a 256 kbps target without comparing compressed sizes.
+For lossy sources, the service tries 256 kbps first and compares its compressed audio payload with the source over the same duration.
+If that output is larger, it encodes 128 kbps from the source instead; that fallback may still be larger than the source.
 
 Set `audio.preserve_lossless` to keep compatible lossless samples as FLAC, with AAC fallback.
 FLAC keeps the source sample rate, bit depth, and channels and uses maximum compression.
@@ -181,6 +183,15 @@ HLS provides the quality choices; the player decides when to switch.
 Images keep the original by default; audio and video do not.
 Set the matching `save_original` to keep a source for later processing.
 `POST /api/v1/media/MEDIA_ID/tasks` creates new media from a saved original and leaves the old item unchanged.
+This request requires `kind` to select `image`, `audio`, or `video`:
+
+```sh
+curl -H 'Content-Type: application/json' \
+  -d '{"kind":"image","image":{"variants":[{"name":"preview","max_width":640,"max_height":640}]}}' \
+  http://127.0.0.1:1111/api/v1/media/MEDIA_ID/tasks
+```
+
+Leaving out `kind` returns `422` with error code `invalid_request`.
 
 Set `processing_mode: "trust"` inside the image, audio, or video options to reuse compliant files or streams.
 Datalith still checks each output and converts anything that does not meet its requirements.
@@ -236,8 +247,11 @@ Use HTTP transfers when the service must stay running.
 Before upgrading, stop the service and copy the whole data folder to a safe place.
 Do not back up only `datalith.sqlite`; the folder also holds file contents and pending work.
 Rebuild and start with `docker compose up --build -d` after the backup.
-Startup upgrades supported older databases and keeps their IDs.
-The automatic versioned database backup is not a full data backup, and the old HTTP API and Node.js client are not compatible with `/api/v1`.
+Startup upgrades the original version 1 database to version 2 and keeps media IDs and stored outputs.
+It saves `datalith.sqlite.v1.bak` before the upgrade and removes the old resource and image tables after their data has been moved.
+This database backup is not a full data backup.
+Development database formats between these versions are not supported.
+The old HTTP API and Node.js client are not compatible with `/api/v1`.
 
 Old Docker deployments used `Dockerfile.image` and `docker-compose.image.yml`.
 The full build now uses `Dockerfile` with the `media` target, and the start command is `docker compose up --build -d`.
@@ -250,7 +264,7 @@ The UI is included in the service and needs no CDN.
 `/api/v1/capabilities` reports available processing features and limits.
 Use error codes rather than message text when an application handles errors.
 
-Native builds need Rust 1.94 or later, libmagic development files, and ImageMagick 7.1.1 or later below 7.2.
+Native builds need Linux, Rust 1.94 or later, libmagic development files, and ImageMagick 7.1.1 or later below 7.2.
 Image builds also need pkg-config and Clang.
 Audio/video processing needs external FFmpeg and ffprobe version 9 or later.
 Docker uses ImageMagick 7.1.2-32 with FFmpeg 9.0.2; older ImageMagick animation delegates may need an upgrade.
@@ -262,6 +276,9 @@ cargo build --locked --release -p datalith
 ```
 
 For development, use `cargo +nightly fmt --all`, the workspace tests, and clippy with all targets and features.
+To run the tests with the same FFmpeg and ImageMagick builds as CI, use `make docker-test`.
+It runs `docker compose -f docker-compose.test.yml run --build --rm test`; add a command after `test` to run something else, such as `cargo test --locked --workspace --no-default-features`.
+The source folder is mounted into the container and must be writable by UID 1000; the first build takes time because it builds the media tools.
 See the [CI workflow](../.github/workflows/ci.yml) for the checked build combinations.
 
 ## License

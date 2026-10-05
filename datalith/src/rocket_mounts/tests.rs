@@ -1,6 +1,8 @@
 use std::{net::Ipv4Addr, time::Duration};
 
-use datalith_core::{Datalith, DatalithService, ServiceConfig, Task, TaskStatus};
+use datalith_core::{
+    Datalith, DatalithService, PATH_TEMPORARY_FILE_DIRECTORY, ServiceConfig, Task, TaskStatus,
+};
 use rocket::{
     http::{ContentType, Header, Status},
     local::asynchronous::Client,
@@ -11,9 +13,10 @@ use tempfile::TempDir;
 async fn client() -> (Client, DatalithService, TempDir) {
     let directory = TempDir::new().unwrap();
     let datalith = Datalith::new(directory.path()).await.unwrap();
+    let temporary_directory = datalith.get_environment().join(PATH_TEMPORARY_FILE_DIRECTORY);
     let service = DatalithService::new(datalith, ServiceConfig::default()).await.unwrap();
-    let rocket =
-        super::create(Ipv4Addr::LOCALHOST.into(), 1111, 1024 * 1024).manage(service.clone());
+    let rocket = super::create(Ipv4Addr::LOCALHOST.into(), 1111, 1024 * 1024, temporary_directory)
+        .manage(service.clone());
     (Client::tracked(rocket).await.unwrap(), service, directory)
 }
 
@@ -185,6 +188,13 @@ async fn docs_serve_the_generated_api_and_embedded_swagger_ui() {
             .any(|kind| kind == "upload")
     );
     assert_eq!("getOpenApi", document["paths"]["/docs/json"]["get"]["operationId"]);
+    assert!(
+        document["components"]["schemas"]["ProcessOptions"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "kind")
+    );
     assert!(document["paths"]["/media/{id}/hls/{track}/init.mp4"]["get"].is_object());
     assert!(
         document["paths"]["/media/{id}/hls/{track}/segment-{sequence}.m4s"]["head"].is_object()
@@ -231,10 +241,21 @@ async fn docs_serve_the_generated_api_and_embedded_swagger_ui() {
     let completed = wait_task(&client, submitted).await;
     serde_json::from_value::<super::openapi::TaskResult>(completed.result.unwrap()).unwrap();
 
-    let response = client.get("/api/v1/openapi.json").dispatch().await;
-    assert_eq!(Status::PermanentRedirect, response.status());
-    assert_eq!(Some("docs/json"), response.headers().get_one("Location"));
-    drop(response);
+    service.close().await.unwrap();
+}
+
+#[rocket::async_test]
+async fn reprocessing_requires_an_explicit_kind() {
+    let (client, service, _directory) = client().await;
+    let response = client
+        .post(format!("/api/v1/media/{}/tasks", datalith_core::Uuid::new_v4()))
+        .header(ContentType::JSON)
+        .body("{}")
+        .dispatch()
+        .await;
+    assert_eq!(Status::UnprocessableEntity, response.status());
+    let error: Value = response.into_json().await.unwrap();
+    assert_eq!("invalid_request", error["error"]["code"]);
     service.close().await.unwrap();
 }
 
@@ -256,7 +277,19 @@ async fn automatic_uploads_use_content_and_validate_enabled_settings() {
         let submitted: Task = response.into_json().await.unwrap();
         assert_eq!("upload", submitted.kind);
         let completed = wait_task(&client, submitted).await;
-        assert_eq!(kind, completed.result.unwrap()["kind"]);
+        let media = completed.result.unwrap();
+        assert_eq!(kind, media["kind"]);
+        if kind == "image" {
+            let response = client
+                .post(format!("/api/v1/media/{}/tasks", media["id"].as_str().unwrap()))
+                .header(ContentType::JSON)
+                .body(r#"{"kind":"image"}"#)
+                .dispatch()
+                .await;
+            assert_eq!(Status::Accepted, response.status());
+            let processed = wait_task(&client, response.into_json().await.unwrap()).await;
+            assert_eq!("image", processed.result.unwrap()["kind"]);
+        }
     }
     let response = client
         .post("/api/v1/uploads")

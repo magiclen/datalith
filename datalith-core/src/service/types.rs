@@ -720,24 +720,20 @@ pub struct ExportOptions {
 /// Options for processing the retained original of existing media.
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct ProcessOptions {
-    /// The output media kind; the default is `Image` for older clients.
-    #[serde(skip_serializing_if = "is_image_kind")]
-    #[cfg_attr(feature = "openapi", schema(default = json!("image"), schema_with = super::openapi::process_options_kind))]
+    /// The output media kind, which must be given in an API request.
+    #[cfg_attr(feature = "openapi", schema(required = true, schema_with = super::openapi::process_options_kind))]
     pub kind:  MediaKind,
     /// The image options.
+    #[serde(default)]
     pub image: ImageOptions,
     /// The standalone audio options.
-    #[serde(skip_serializing_if = "AudioOptions::is_default")]
+    #[serde(default, skip_serializing_if = "AudioOptions::is_default")]
     pub audio: AudioOptions,
     /// The video options.
-    #[serde(skip_serializing_if = "VideoOptions::is_default")]
+    #[serde(default, skip_serializing_if = "VideoOptions::is_default")]
     pub video: VideoOptions,
-}
-
-fn is_image_kind(kind: &MediaKind) -> bool {
-    *kind == MediaKind::Image
 }
 
 fn is_zero(value: &f64) -> bool {
@@ -851,7 +847,7 @@ pub(super) struct ProcessingRecipe {
 impl ProcessingRecipe {
     pub fn from_config(config: &ServiceConfig) -> Self {
         Self {
-            version:       1,
+            version:       2,
             image_limits:  config.image_limits.clone(),
             video_bitrate: config.av.bitrate,
         }
@@ -1030,6 +1026,7 @@ pub(super) enum Work {
     },
     Process {
         source:     Uuid,
+        #[serde(deserialize_with = "deserialize_saved_process_options")]
         options:    ProcessOptions,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         recipe:     Option<ProcessingRecipe>,
@@ -1042,6 +1039,17 @@ pub(super) enum Work {
         hash: String,
     },
     Export(ExportOptions),
+}
+
+fn deserialize_saved_process_options<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<ProcessOptions, D::Error> {
+    let mut value = serde_json::Value::deserialize(deserializer)?;
+    // Saved image tasks may not include their output kind.
+    if let Some(options) = value.as_object_mut() {
+        options.entry("kind").or_insert_with(|| serde_json::json!("image"));
+    }
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,7 +1,7 @@
 use std::{collections::HashMap, io, path::Path};
 
 use chrono::{DateTime, Utc};
-use sqlx::{Pool, Row, Sqlite};
+use sqlx::{Pool, Row, Sqlite, Transaction};
 use uuid::Uuid;
 
 use super::{HlsInventory, Media, MediaFile, MediaKind, ServiceError, Variant, file_references};
@@ -22,50 +22,28 @@ pub(crate) async fn upgrade(
 }
 
 async fn upgrade_inner(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), ServiceError> {
-    let version: String =
-        sqlx::query_scalar("SELECT value FROM sys_db_information WHERE key = 'version'")
-            .fetch_one(pool)
-            .await?;
-    let ready: Option<String> =
-        sqlx::query_scalar("SELECT value FROM sys_db_information WHERE key = 'media_migration'")
-            .fetch_optional(pool)
-            .await?;
-    if version == "3" && ready.as_deref() == Some("3") {
-        sqlx::raw_sql(include_str!("../sql/service.sql")).execute(pool).await?;
-        sqlx::raw_sql(include_str!("../sql/media-v3.sql")).execute(pool).await?;
-        return Ok(());
-    }
-    if version != "3" {
-        backup_database(pool, environment, &version).await?;
-    }
-    if !matches!(ready.as_deref(), Some("2" | "3")) {
-        upgrade_legacy(pool, environment).await?;
-    }
-    let mut tx = pool.begin().await?;
+    backup_database(pool, environment).await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::raw_sql(include_str!("../sql/service.sql")).execute(&mut *tx).await?;
-    sqlx::raw_sql(include_str!("../sql/media-v3.sql")).execute(&mut *tx).await?;
-    sqlx::query("UPDATE sys_db_information SET value = '3' WHERE key = 'version'")
+    upgrade_legacy(&mut tx, environment).await?;
+    sqlx::raw_sql(include_str!("../sql/migrate-v1.sql")).execute(&mut *tx).await?;
+    let violations = sqlx::query("PRAGMA foreign_key_check").fetch_all(&mut *tx).await?;
+    if !violations.is_empty() {
+        return Err(ServiceError::Invalid("legacy database has invalid references".into()));
+    }
+    sqlx::query("UPDATE sys_db_information SET value = '2' WHERE key = 'version'")
         .execute(&mut *tx)
         .await?;
-    sqlx::query(
-        "INSERT OR REPLACE INTO sys_db_information(key,value) VALUES('media_migration','3')",
-    )
-    .execute(&mut *tx)
-    .await?;
     tx.commit().await?;
     Ok(())
 }
 
-async fn backup_database(
-    pool: &Pool<Sqlite>,
-    environment: &Path,
-    version: &str,
-) -> Result<(), ServiceError> {
-    let backup = environment.join(format!("{PATH_DB_FILE}.v{version}.bak"));
+async fn backup_database(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), ServiceError> {
+    let backup = environment.join(format!("{PATH_DB_FILE}.v1.bak"));
     if tokio::fs::try_exists(&backup).await? {
         return Ok(());
     }
-    let pending = environment.join(format!("{PATH_DB_FILE}.v{version}.bak.pending"));
+    let pending = environment.join(format!("{PATH_DB_FILE}.v1.bak.pending"));
     match tokio::fs::remove_file(&pending).await {
         Ok(()) => (),
         Err(error) if error.kind() == io::ErrorKind::NotFound => (),
@@ -78,12 +56,15 @@ async fn backup_database(
     Ok(())
 }
 
-async fn upgrade_legacy(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), ServiceError> {
+async fn upgrade_legacy(
+    tx: &mut Transaction<'_, Sqlite>,
+    environment: &Path,
+) -> Result<(), ServiceError> {
     let rows = sqlx::query(
         "SELECT id, hash, created_at, file_size, file_type, file_name, expired_at FROM files \
          ORDER BY expired_at IS NOT NULL, id",
     )
-    .fetch_all(pool)
+    .fetch_all(&mut **tx)
     .await?;
     let now = Utc::now().timestamp_millis();
     let mut files = HashMap::new();
@@ -123,26 +104,24 @@ async fn upgrade_legacy(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), S
         });
         mappings.push((id, hash, storage_id));
     }
-    let mut tx = pool.begin().await?;
-    sqlx::raw_sql(include_str!("../sql/service.sql")).execute(&mut *tx).await?;
     for (id, hash, storage_id) in mappings {
         sqlx::query("INSERT INTO blob_files(file_id, hash, storage_id) VALUES(?, ?, ?)")
             .bind(id)
             .bind(hash)
             .bind(storage_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
     }
     let resources = sqlx::query(
         "SELECT id, created_at, file_name, file_type, file_id, expired_at FROM resources",
     )
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut **tx)
     .await?;
     let images = sqlx::query(
         "SELECT id, created_at, image_stem, image_width, image_height, original_file_id FROM \
          images",
     )
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut **tx)
     .await?;
     for row in resources {
         let id: Uuid = row.try_get("id")?;
@@ -170,7 +149,7 @@ async fn upgrade_legacy(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), S
             animated: false,
             frame_count: 1,
         };
-        insert_media(&mut tx, &media, None).await?;
+        insert_media(tx, &media, None).await?;
     }
     for row in images {
         let id: Uuid = row.try_get("id")?;
@@ -204,7 +183,7 @@ async fn upgrade_legacy(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), S
              multiplier, fallback",
         )
         .bind(id)
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await?;
         for row in thumbnails {
             let multiplier: u8 = row.try_get("multiplier")?;
@@ -235,7 +214,7 @@ async fn upgrade_legacy(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), S
                 recipe: None,
             });
         }
-        insert_media(&mut tx, &media, None).await?;
+        insert_media(tx, &media, None).await?;
     }
     // Keep standalone files available under their original IDs.
     for row in &rows {
@@ -245,7 +224,7 @@ async fn upgrade_legacy(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), S
         };
         let used: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM media_files WHERE file_id = ?")
             .bind(id)
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await?;
         if used != 0 {
             continue;
@@ -267,33 +246,20 @@ async fn upgrade_legacy(pool: &Pool<Sqlite>, environment: &Path) -> Result<(), S
             animated: false,
             frame_count: 1,
         };
-        insert_media(&mut tx, &media, None).await?;
+        insert_media(tx, &media, None).await?;
     }
-    sqlx::query("DELETE FROM image_thumbnails").execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM images").execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM resources").execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM image_thumbnails").execute(&mut **tx).await?;
+    sqlx::query("DELETE FROM images").execute(&mut **tx).await?;
+    sqlx::query("DELETE FROM resources").execute(&mut **tx).await?;
     for id in dropped {
-        sqlx::query("DELETE FROM files WHERE id = ?").bind(id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM files WHERE id = ?").bind(id).execute(&mut **tx).await?;
     }
     sqlx::query(
         "UPDATE files SET expired_at = NULL, count = (SELECT COUNT(*) FROM media_files WHERE \
          file_id = files.id)",
     )
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
-    sqlx::query("UPDATE sys_db_information SET value = '2' WHERE key = 'version'")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
-        "INSERT OR REPLACE INTO sys_db_information(key,value) VALUES('media_migration','2')",
-    )
-    .execute(&mut *tx)
-    .await?;
-    let violations = sqlx::query("PRAGMA foreign_key_check").fetch_all(&mut *tx).await?;
-    if !violations.is_empty() {
-        return Err(ServiceError::Invalid("legacy database has invalid references".into()));
-    }
-    tx.commit().await?;
     Ok(())
 }
 

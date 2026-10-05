@@ -1,6 +1,6 @@
 use super::{
     super::{Rational, ServiceError, VideoOptions},
-    probe::Stream,
+    probe::{BitrateLimit, Stream},
 };
 
 pub(super) const RESOLUTIONS: [(u16, u32, u32); 12] = [
@@ -274,20 +274,14 @@ pub(super) fn renditions(
     Ok(outputs)
 }
 
-pub(super) fn can_copy(stream: &Stream, rendition: &Rendition) -> bool {
-    let Some(info) = stream.h264() else {
-        return false;
-    };
-    let Some(level) = LEVELS.iter().find(|level| level.code == info.level) else {
-        return false;
-    };
-    let Some(rate) = stream.rate() else {
-        return false;
-    };
+pub(super) fn copy_limit(stream: &Stream, rendition: &Rendition) -> Option<BitrateLimit> {
+    let info = stream.h264()?;
+    let level = LEVELS.iter().find(|level| level.code == info.level)?;
+    let rate = stream.rate()?;
     let max_buffer = info
         .buffering
         .unwrap_or(info.references.saturating_add(stream.number("has_b_frames") as u32));
-    stream.text("codec_name") == "h264"
+    let compliant = stream.text("codec_name") == "h264"
         && stream.text("pix_fmt") == "yuv420p"
         && !stream.hdr()
         && matches!(stream.text("profile"), "High" | "Main" | "Baseline" | "Constrained Baseline")
@@ -305,7 +299,19 @@ pub(super) fn can_copy(stream: &Stream, rendition: &Rendition) -> bool {
         && f64::from(info.macroblocks) / rendition.frame_duration() <= f64::from(level.mbps)
         && info.references <= 16
         && max_buffer <= 16
-        && max_buffer.max(info.references).saturating_mul(info.macroblocks) <= level.dpb
+        && max_buffer.max(info.references).saturating_mul(info.macroblocks) <= level.dpb;
+    if !compliant {
+        return None;
+    }
+    let (numerator, denominator) = match info.profile {
+        66 | 77 => (1, 1),
+        100 => (5, 4),
+        _ => return None,
+    };
+    Some(BitrateLimit {
+        bitrate: level.bitrate * numerator / denominator,
+        buffer:  level.buffer * numerator / denominator,
+    })
 }
 
 pub(super) fn filters(stream: &Stream, rendition: &Rendition, origin: f64) -> String {

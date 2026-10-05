@@ -58,7 +58,7 @@ pub(super) struct CapabilitiesAudio {
     engine:                 String,
     profiles:               Vec<String>,
     aac_sample_rate:        u64,
-    /// First and second target bitrates, in bits per second: 256000 then 128000.
+    /// AAC targets in bits per second: lossless sources use 256000; lossy sources can fall back to 128000 after a payload comparison.
     aac_bitrates:           Vec<u64>,
     mp3_fallback:           bool,
     save_original_default:  bool,

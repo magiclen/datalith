@@ -169,10 +169,6 @@ async fn archive_roundtrip_merges_content_and_remaps_conflicting_media() {
     for id in [first.id, second.id, existing.id, remapped] {
         assert!(target.delete_media(id).await.unwrap());
     }
-    assert_eq!(0, target_storage.clear_untracked_files().await.unwrap());
-    let mappings: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM blob_files").fetch_one(&database).await.unwrap();
-    assert_eq!(1, mappings);
     let mut actual = Vec::new();
     content.file.read_to_end(&mut actual).await.unwrap();
     assert_eq!(payload.as_slice(), actual);

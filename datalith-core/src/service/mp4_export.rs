@@ -315,7 +315,6 @@ impl DatalithService {
         let mut file =
             Self::prepare_file(output.clone(), "video/mp4".into(), work.file_name.clone()).await?;
         file.metadata.id = id;
-        fs::File::open(&output).await?.sync_all().await?;
         fs::rename(output, directory.join("export.mp4")).await?;
         sync_directory(&directory).await?;
         let _gate = self.0.writes.read().await;

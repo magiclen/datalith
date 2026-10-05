@@ -1,0 +1,17 @@
+name: datalith-test
+
+services:
+  test:
+    image: datalith:test
+    build:
+      context: .
+      target: test
+    init: true
+    volumes:
+      - .:/workspace
+      - cargo:/cargo
+      - target:/target
+
+volumes:
+  cargo:
+  target:

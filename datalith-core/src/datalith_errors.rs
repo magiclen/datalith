@@ -4,8 +4,6 @@ use std::{
     io,
 };
 
-use mime::Mime;
-
 /// Errors when creating a Datalith store.
 #[derive(Debug)]
 pub enum DatalithCreateError {
@@ -59,7 +57,7 @@ impl Error for DatalithCreateError {}
 
 /// Errors when reading from Datalith.
 #[derive(Debug)]
-pub enum DatalithReadError {
+pub(crate) enum DatalithReadError {
     IOError(io::Error),
     SQLError(sqlx::Error),
 }
@@ -89,63 +87,3 @@ impl Display for DatalithReadError {
 }
 
 impl Error for DatalithReadError {}
-
-/// Errors when writing to Datalith.
-///
-/// For `FileLengthTooLarge`, `actual_file_length` is the number of bytes read before the upload stopped, so the whole input can be longer.
-#[derive(Debug)]
-pub enum DatalithWriteError {
-    FileTypeInvalid { file_type: Box<Mime>, expected_file_type: Box<Mime> },
-    FileLengthTooLarge { expected_file_length: u64, actual_file_length: u64 },
-    IOError(io::Error),
-    SQLError(sqlx::Error),
-}
-
-impl From<DatalithReadError> for DatalithWriteError {
-    #[inline]
-    fn from(error: DatalithReadError) -> Self {
-        match error {
-            DatalithReadError::IOError(error) => Self::IOError(error),
-            DatalithReadError::SQLError(error) => Self::SQLError(error),
-        }
-    }
-}
-
-impl From<io::Error> for DatalithWriteError {
-    #[inline]
-    fn from(error: io::Error) -> Self {
-        Self::IOError(error)
-    }
-}
-
-impl From<sqlx::Error> for DatalithWriteError {
-    #[inline]
-    fn from(error: sqlx::Error) -> Self {
-        Self::SQLError(error)
-    }
-}
-
-impl Display for DatalithWriteError {
-    #[inline]
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::FileTypeInvalid {
-                file_type,
-                expected_file_type,
-            } => f.write_fmt(format_args!(
-                "the file type {file_type:?} is invalid (expect: {expected_file_type:?})"
-            )),
-            Self::FileLengthTooLarge {
-                expected_file_length,
-                actual_file_length,
-            } => f.write_fmt(format_args!(
-                "the file length {actual_file_length:?} is larger than the expected one (expect: \
-                 {expected_file_length:?})"
-            )),
-            Self::IOError(error) => Display::fmt(error, f),
-            Self::SQLError(error) => Display::fmt(error, f),
-        }
-    }
-}
-
-impl Error for DatalithWriteError {}

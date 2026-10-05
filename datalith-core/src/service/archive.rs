@@ -44,6 +44,12 @@ struct ArchiveFile {
     file_size: String,
 }
 
+struct ArchiveSnapshot {
+    manifest: Manifest,
+    contents: BTreeMap<String, (u64, PathBuf)>,
+    guards:   Vec<OpenGuard>,
+}
+
 struct ValidatedArchive {
     manifest:  Manifest,
     digest:    String,
@@ -51,14 +57,14 @@ struct ValidatedArchive {
 }
 
 impl DatalithService {
-    pub(super) async fn export_archive(
+    async fn snapshot_archive(
         &self,
         task_id: Uuid,
         options: ExportOptions,
-        cancel: Arc<AtomicBool>,
-    ) -> Result<Value, ServiceError> {
-        let _gate = self.0.writes.write().await;
-        check_cancelled(&cancel)?;
+        cancel: &AtomicBool,
+    ) -> Result<ArchiveSnapshot, ServiceError> {
+        let gate = self.0.writes.write().await;
+        check_cancelled(cancel)?;
         let mutation = self.0.mutations.lock().await;
         let now = Utc::now();
         let requested = options.ids.map(|ids| ids.into_iter().collect::<HashSet<_>>());
@@ -66,7 +72,7 @@ impl DatalithService {
             let ids: Vec<_> = ids.iter().copied().collect();
             let mut rows = Vec::new();
             for ids in ids.chunks(QUERY_BATCH_SIZE) {
-                check_cancelled(&cancel)?;
+                check_cancelled(cancel)?;
                 let mut query = QueryBuilder::<Sqlite>::new(
                     "SELECT metadata FROM media WHERE consumed_at IS NULL AND (expires_at IS NULL \
                      OR expires_at > ",
@@ -97,7 +103,6 @@ impl DatalithService {
             media.push(serde_json::from_str::<Media>(row.try_get("metadata")?)?);
         }
         media.sort_unstable_by_key(|item| item.id);
-        let media_count = media.len();
         let mut hls = BTreeMap::new();
         for item in &media {
             if item.video.is_some() {
@@ -121,7 +126,7 @@ impl DatalithService {
         let ids: Vec<_> = files.keys().copied().collect();
         let file_directory = self.0.datalith.get_environment().join(PATH_FILE_DIRECTORY);
         for ids in ids.chunks(QUERY_BATCH_SIZE) {
-            check_cancelled(&cancel)?;
+            check_cancelled(cancel)?;
             let mut query = QueryBuilder::<Sqlite>::new(
                 "SELECT f.id, COALESCE(b.storage_id, f.id) FROM files f LEFT JOIN blob_files b ON \
                  b.file_id = f.id WHERE f.id IN (",
@@ -145,6 +150,8 @@ impl DatalithService {
             }
         }
         drop(mutation);
+        // The guards keep the selected files, so writes can continue while the archive is written from this snapshot.
+        drop(gate);
         let manifest = Manifest {
             version: 2,
             archive_id: task_id,
@@ -159,6 +166,25 @@ impl DatalithService {
                 })
                 .collect(),
         };
+        Ok(ArchiveSnapshot {
+            manifest,
+            contents,
+            guards,
+        })
+    }
+
+    pub(super) async fn export_archive(
+        &self,
+        task_id: Uuid,
+        options: ExportOptions,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Value, ServiceError> {
+        let ArchiveSnapshot {
+            manifest,
+            contents,
+            guards,
+        } = self.snapshot_archive(task_id, options, &cancel).await?;
+        let media_count = manifest.media.len();
         let directory = self.work_directory(task_id);
         let worker_cancel = cancel.clone();
         let (sha256, file_size) = tokio::task::spawn_blocking(move || {
@@ -228,6 +254,7 @@ impl DatalithService {
         let mut imported = 0u64;
         let mut skipped = 0u64;
         let mut guards = Vec::new();
+        let mut linked = false;
         let now = Utc::now();
         for mut media in archive.manifest.media {
             check_cancelled(&cancel)?;
@@ -278,15 +305,16 @@ impl DatalithService {
             let source_ids =
                 media_files(&media, inventory.as_ref()).map(|file| file.id).collect::<Vec<_>>();
             refresh_paths(&mut media);
-            self.publish_import_media_tx(
-                &mut tx,
-                &mut media,
-                inventory.as_mut(),
-                &prepared,
-                &mut guards,
-                &mut resolved_files,
-            )
-            .await?;
+            linked |= self
+                .publish_import_media_tx(
+                    &mut tx,
+                    &mut media,
+                    inventory.as_mut(),
+                    &prepared,
+                    &mut guards,
+                    &mut resolved_files,
+                )
+                .await?;
             for (old, new) in source_ids
                 .into_iter()
                 .zip(media_files(&media, inventory.as_ref()).map(|file| file.id))
@@ -297,6 +325,9 @@ impl DatalithService {
             imported += 1;
         }
         check_cancelled(&cancel)?;
+        if linked {
+            self.sync_file_directory().await?;
+        }
         let result = json!({"archive_id": archive.manifest.archive_id, "imported": imported, "skipped": skipped, "id_map": id_map, "file_id_map": file_id_map});
         sqlx::query("INSERT INTO archive_imports(archive_id, digest, result) VALUES(?,?,?)")
             .bind(archive.manifest.archive_id)
@@ -399,7 +430,6 @@ fn write_archive(
     output.as_file().sync_all()?;
     check_cancelled(cancel)?;
     output.persist(directory.join("export.tar")).map_err(|error| error.error)?;
-    #[cfg(unix)]
     File::open(directory)?.sync_all()?;
     Ok((digest, size))
 }
@@ -694,5 +724,115 @@ fn refresh_paths(media: &mut Media) {
         for audio in &mut video.audio {
             audio.content_path = format!("api/v1/media/{}/hls/{}/index.m3u8", media.id, audio.id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::{fs, io::AsyncReadExt};
+
+    use super::*;
+    use crate::{ContentRequest, Datalith, ServiceConfig, Task, TaskStatus, UploadOptions};
+
+    async fn finished(service: &DatalithService, id: Uuid) -> Task {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let task = service.get_task(id).await.unwrap().unwrap();
+                if task.status.is_terminal() {
+                    assert_eq!(TaskStatus::Succeeded, task.status, "{:?}", task.error);
+                    return task;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn export_snapshot_keeps_aliases_readable_after_deletion_and_cleanup() {
+        let source_directory = tempfile::tempdir().unwrap();
+        let source = DatalithService::new(
+            Datalith::new(source_directory.path()).await.unwrap(),
+            ServiceConfig::default(),
+        )
+        .await
+        .unwrap();
+        let payload = b"Snapshot content stays readable.";
+        let mut ids = Vec::new();
+        for name in ["first.txt", "second.txt"] {
+            let task = source
+                .submit_upload(
+                    payload.as_slice(),
+                    UploadOptions {
+                        file_name: Some(name.into()),
+                        ..UploadOptions::default()
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            let media: Media =
+                serde_json::from_value(finished(&source, task.id).await.result.unwrap()).unwrap();
+            ids.push(media.id);
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let ArchiveSnapshot {
+            manifest,
+            contents,
+            guards,
+        } = source
+            .snapshot_archive(Uuid::new_v4(), ExportOptions::default(), &cancel)
+            .await
+            .unwrap();
+        assert_eq!(2, manifest.media.len());
+        assert_eq!(1, contents.len());
+        let stored_path = contents.values().next().unwrap().1.clone();
+
+        // The snapshot has released the write gate, while its guard still protects the shared content.
+        for id in &ids {
+            assert!(source.delete_media(*id).await.unwrap());
+        }
+        source.clear_released_files().await.unwrap();
+        assert!(source.clear_untracked_files().await.unwrap());
+        assert!(fs::try_exists(&stored_path).await.unwrap());
+        let mappings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blob_files")
+            .fetch_one(&source.0.datalith.0.db)
+            .await
+            .unwrap();
+        assert_eq!(1, mappings);
+
+        let archive_directory = tempfile::tempdir().unwrap();
+        write_archive(archive_directory.path(), manifest, contents, &cancel).unwrap();
+        drop(guards);
+        source.clear_released_files().await.unwrap();
+        source.clear_untracked_files().await.unwrap();
+        assert!(!fs::try_exists(&stored_path).await.unwrap());
+
+        let target_directory = tempfile::tempdir().unwrap();
+        let target = DatalithService::new(
+            Datalith::new(target_directory.path()).await.unwrap(),
+            ServiceConfig::default(),
+        )
+        .await
+        .unwrap();
+        let task = target
+            .submit_import_file(archive_directory.path().join("export.tar"), None)
+            .await
+            .unwrap();
+        let result = finished(&target, task.id).await.result.unwrap();
+        assert_eq!(2, result["imported"]);
+        for id in ids {
+            let mut content =
+                target.open_content(id, ContentRequest::default(), false).await.unwrap();
+            let mut actual = Vec::new();
+            content.file.read_to_end(&mut actual).await.unwrap();
+            assert_eq!(payload.as_slice(), actual);
+            assert_eq!(hex::encode(Sha256::digest(payload)), content.metadata.sha256);
+        }
+        source.close().await.unwrap();
+        target.close().await.unwrap();
     }
 }

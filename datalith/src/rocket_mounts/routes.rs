@@ -17,7 +17,6 @@ use rocket_multipart_form_data::{
     Repetition, multer,
 };
 use serde_json::Value;
-use tokio::fs::File;
 
 use super::{ApiError, IdempotencyKey, ServerConfig};
 
@@ -43,8 +42,8 @@ async fn multipart(
     }
     let options = MultipartFormDataOptions {
         max_data_bytes: config.max_file_size.saturating_add(1024 * 1024 + 64 * 1024),
+        temporary_dir: config.temporary_directory.clone(),
         allowed_fields,
-        ..MultipartFormDataOptions::default()
     };
     MultipartFormData::parse(content_type, data, options).await.map_err(|error| match error {
         MultipartFormDataError::DataTooLargeError(_)
@@ -108,8 +107,7 @@ pub(super) async fn upload(
             .filter(|mime| mime.essence_str() != "application/octet-stream")
             .map(ToString::to_string);
     }
-    let reader = File::open(&file.path).await.map_err(ServiceError::from)?;
-    let task = service.submit_upload(reader, options, key.0).await?;
+    let task = service.submit_upload_file(&file.path, options, key.0).await?;
     Ok(Accepted(Json(task)))
 }
 
@@ -142,8 +140,7 @@ pub(super) async fn import(
     if files.len() != 1 {
         return Err(ApiError::invalid("Exactly one file is required."));
     }
-    let reader = File::open(&files[0].path).await.map_err(ServiceError::from)?;
-    Ok(Accepted(Json(service.submit_import(reader, key.0).await?)))
+    Ok(Accepted(Json(service.submit_import_file(&files[0].path, key.0).await?)))
 }
 
 #[utoipa::path(
@@ -152,7 +149,7 @@ pub(super) async fn import(
     operation_id = "exportMedia",
     summary = "Export all media or selected IDs",
     tag = "Tasks",
-    description = "Export pauses content writes, file cleanup, and single-use claims while normal downloads continue. Archive version 2 contains a manifest, complete HLS inventory, and one copy of each unique file content, including originals, image and standalone audio outputs, and HLS initialization files and segments. Sessions, task history, settings, and temporary MP4 artifacts are not transferred.",
+    description = "Export briefly pauses content writes, file cleanup, and single-use claims while it records the selected media, then writes the archive from that snapshot. Normal downloads continue. Archive version 2 contains a manifest, complete HLS inventory, and one copy of each unique file content, including originals, image and standalone audio outputs, and HLS initialization files and segments. Sessions, task history, settings, and temporary MP4 artifacts are not transferred.",
     request_body = datalith_core::ExportOptions,
     params(
         ("Idempotency-Key" = Option<String>, Header, description = "An ASCII key stored with the task for seven days by default. The same key and input return the existing task. Different input with the same key returns 409.")
@@ -296,7 +293,7 @@ pub(super) async fn media(
     operation_id = "processMedia",
     summary = "Create media from a retained original",
     tag = "Tasks",
-    description = "Create new image, audio, or video media from a retained original without changing the source. The original must exist. Single-use sources return 409. The result keeps the source expiry and is not published after it has expired. The same idempotency key, source ID, and options return the existing task even after the source is deleted or expires.",
+    description = "Create new image, audio, or video media from a retained original without changing the source. The kind field is required and selects image, audio, or video. The original must exist. Single-use sources return 409. The result keeps the source expiry and is not published after it has expired. The same idempotency key, source ID, and options return the existing task even after the source is deleted or expires.",
     request_body = datalith_core::ProcessOptions,
     params(
         ("id" = datalith_core::Uuid, Path),
@@ -367,11 +364,6 @@ pub(super) fn capabilities(service: &State<DatalithService>) -> Json<Value> {
 #[get("/docs/json")]
 pub(super) fn openapi() -> Json<&'static utoipa::openapi::OpenApi> {
     Json(super::openapi::document())
-}
-
-#[get("/openapi.json")]
-pub(super) fn legacy_openapi() -> Redirect {
-    Redirect::permanent("docs/json")
 }
 
 #[get("/docs")]

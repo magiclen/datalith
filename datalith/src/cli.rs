@@ -1,4 +1,4 @@
-use std::{net::IpAddr, path::PathBuf, time::Duration};
+use std::{net::IpAddr, path::PathBuf};
 
 use byte_unit::Byte;
 use clap::{Parser, Subcommand};
@@ -25,11 +25,6 @@ pub struct CLIArgs {
     #[arg(long, env = "DATALITH_MAX_FILE_SIZE", default_value = "2 GiB", global = true)]
     #[arg(help = "Maximum upload or import archive size")]
     pub max_file_size: Byte,
-
-    #[arg(long, env = "DATALITH_TEMPORARY_FILE_LIFESPAN", default_value = "60", global = true)]
-    #[arg(value_parser = parse_duration)]
-    #[arg(help = "Default temporary file lifespan for the legacy Rust API in seconds")]
-    pub temporary_file_lifespan: Duration,
 
     #[arg(long, env = "DATALITH_WORKERS", default_value = "1", global = true)]
     #[arg(value_parser = clap::value_parser!(u16).range(1..=64))]
@@ -131,14 +126,6 @@ pub enum Command {
         #[arg(value_hint = clap::ValueHint::FilePath)]
         file: PathBuf,
     },
-}
-
-fn parse_duration(value: &str) -> Result<Duration, String> {
-    let seconds: u64 = value.parse().map_err(|_| "Expected a positive number of seconds.")?;
-    if !(1..=36_000_000).contains(&seconds) {
-        return Err("The lifespan must be between 1 and 36000000 seconds.".into());
-    }
-    Ok(Duration::from_secs(seconds))
 }
 
 pub fn get_args() -> CLIArgs {

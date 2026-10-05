@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
     sync::{
         Arc,
@@ -42,6 +42,18 @@ impl Drop for PendingDirectory {
     }
 }
 
+impl PendingDirectory {
+    async fn sync(&self) -> Result<(), ServiceError> {
+        sync_directory(&self.path).await?;
+        sync_directory(
+            self.path.parent().ok_or_else(|| ServiceError::Internal("invalid work path".into()))?,
+        )
+        .await
+    }
+}
+
+type StagedTask = (Uuid, PendingDirectory, StagedInput);
+
 impl DatalithService {
     /// Queue an upload; the returned task creates the media.
     /// A repeated request with the same idempotency key and content returns the first task.
@@ -51,8 +63,32 @@ impl DatalithService {
         options: UploadOptions,
         idempotency_key: Option<String>,
     ) -> Result<Task, ServiceError> {
+        validate_idempotency_key(idempotency_key.as_deref())?;
         self.validate_upload(&options)?;
-        let (id, directory, input) = self.stage_input(reader).await?;
+        let staged = self.stage_input(reader).await?;
+        self.enqueue_upload(staged, options, idempotency_key).await
+    }
+
+    /// Queue an upload from a file, like `submit_upload`.
+    /// The file is linked instead of copied when the file system allows it, so do not change it after this call; removing it is fine.
+    pub async fn submit_upload_file(
+        &self,
+        path: impl AsRef<Path>,
+        options: UploadOptions,
+        idempotency_key: Option<String>,
+    ) -> Result<Task, ServiceError> {
+        validate_idempotency_key(idempotency_key.as_deref())?;
+        self.validate_upload(&options)?;
+        let staged = self.stage_file(path.as_ref()).await?;
+        self.enqueue_upload(staged, options, idempotency_key).await
+    }
+
+    async fn enqueue_upload(
+        &self,
+        (id, directory, input): StagedTask,
+        options: UploadOptions,
+        idempotency_key: Option<String>,
+    ) -> Result<Task, ServiceError> {
         self.enqueue(
             id,
             Work::Upload {
@@ -72,7 +108,28 @@ impl DatalithService {
         reader: impl AsyncRead + Unpin,
         idempotency_key: Option<String>,
     ) -> Result<Task, ServiceError> {
-        let (id, directory, input) = self.stage_input(reader).await?;
+        validate_idempotency_key(idempotency_key.as_deref())?;
+        let staged = self.stage_input(reader).await?;
+        self.enqueue_import(staged, idempotency_key).await
+    }
+
+    /// Queue the import of a Datalith archive file, like `submit_import`.
+    /// The file is linked instead of copied when the file system allows it, so do not change it after this call; removing it is fine.
+    pub async fn submit_import_file(
+        &self,
+        path: impl AsRef<Path>,
+        idempotency_key: Option<String>,
+    ) -> Result<Task, ServiceError> {
+        validate_idempotency_key(idempotency_key.as_deref())?;
+        let staged = self.stage_file(path.as_ref()).await?;
+        self.enqueue_import(staged, idempotency_key).await
+    }
+
+    async fn enqueue_import(
+        &self,
+        (id, directory, input): StagedTask,
+        idempotency_key: Option<String>,
+    ) -> Result<Task, ServiceError> {
         self.enqueue(
             id,
             Work::Import {
@@ -91,6 +148,7 @@ impl DatalithService {
         options: ExportOptions,
         idempotency_key: Option<String>,
     ) -> Result<Task, ServiceError> {
+        validate_idempotency_key(idempotency_key.as_deref())?;
         if options.ids.as_ref().is_some_and(|ids| ids.is_empty() || ids.len() > 100_000) {
             return Err(ServiceError::Invalid(
                 "export IDs must contain between 1 and 100000 items".into(),
@@ -142,8 +200,22 @@ impl DatalithService {
             )
             .await?;
         let file_name = content.metadata.file_name.clone();
-        let mut content = content;
-        let (task_id, directory, input) = self.stage_input(&mut content.file).await?;
+        let file_size = content
+            .metadata
+            .file_size
+            .parse()
+            .map_err(|_| ServiceError::Internal("invalid stored file size".into()))?;
+        let stored = self.0.datalith.get_file_path(content.metadata.id).await?;
+        // Stored files never change, so the task can share the retained original instead of copying it.
+        let linked =
+            self.link_input(&stored, Some((content.metadata.sha256.clone(), file_size))).await?;
+        let (task_id, directory, input) = match linked {
+            Some(staged) => staged,
+            None => {
+                let mut content = content;
+                self.stage_input(&mut content.file).await?
+            },
+        };
         self.enqueue(
             task_id,
             Work::Process {
@@ -241,11 +313,72 @@ impl DatalithService {
     async fn stage_input(
         &self,
         mut reader: impl AsyncRead + Unpin,
-    ) -> Result<(Uuid, PendingDirectory, StagedInput), ServiceError> {
+    ) -> Result<StagedTask, ServiceError> {
         let _gate = self.0.writes.try_read().map_err(|_| ServiceError::Busy)?;
         let id = Uuid::new_v4();
         let directory = self.pending_directory(id).await?;
         let mut file = fs::File::create(directory.path.join("input")).await?;
+        let (hash, bytes) = self.read_input(&mut reader, Some(&mut file)).await?;
+        file.flush().await?;
+        file.sync_all().await?;
+        directory.sync().await?;
+        Ok((id, directory, StagedInput {
+            hash,
+            file_size: Some(bytes),
+        }))
+    }
+
+    async fn stage_file(&self, path: &Path) -> Result<StagedTask, ServiceError> {
+        match self.link_input(path, None).await? {
+            Some(staged) => Ok(staged),
+            None => self.stage_input(fs::File::open(path).await?).await,
+        }
+    }
+
+    // Staged inputs are never changed, so a task can share the content of a file through a hard link.
+    // Return `None` when the file cannot be linked, so that the caller can copy it instead.
+    async fn link_input(
+        &self,
+        source: &Path,
+        known: Option<(String, u64)>,
+    ) -> Result<Option<StagedTask>, ServiceError> {
+        let _gate = self.0.writes.try_read().map_err(|_| ServiceError::Busy)?;
+        // A hard link to a symbolic link does not follow it, so only link regular files.
+        let metadata = match fs::symlink_metadata(source).await {
+            Ok(metadata) if metadata.is_file() => metadata,
+            _ => return Ok(None),
+        };
+        if metadata.len() > self.0.config.max_file_size {
+            return Err(ServiceError::PayloadTooLarge);
+        }
+        let id = Uuid::new_v4();
+        let directory = self.pending_directory(id).await?;
+        let input = directory.path.join("input");
+        if fs::hard_link(source, &input).await.is_err() {
+            return Ok(None);
+        }
+        let (hash, bytes) = match known {
+            Some(known) => known,
+            None => {
+                let mut file = fs::File::open(&input).await?;
+                let read = self.read_input(&mut file, None).await?;
+                file.sync_all().await?;
+                read
+            },
+        };
+        directory.sync().await?;
+        Ok(Some((id, directory, StagedInput {
+            hash,
+            file_size: Some(bytes),
+        })))
+    }
+
+    // Hash the input and check its size, and copy it into `output` when it is given.
+    async fn read_input(
+        &self,
+        reader: &mut (impl AsyncRead + Unpin),
+        mut output: Option<&mut fs::File>,
+    ) -> Result<(String, u64), ServiceError> {
         let mut hash = Sha256::new();
         let mut bytes = 0u64;
         let mut buffer = vec![0; 64 * 1024];
@@ -258,23 +391,12 @@ impl DatalithService {
             if bytes > self.0.config.max_file_size {
                 return Err(ServiceError::PayloadTooLarge);
             }
-            file.write_all(&buffer[..n]).await?;
+            if let Some(output) = output.as_mut() {
+                output.write_all(&buffer[..n]).await?;
+            }
             hash.update(&buffer[..n]);
         }
-        file.flush().await?;
-        file.sync_all().await?;
-        sync_directory(&directory.path).await?;
-        sync_directory(
-            directory
-                .path
-                .parent()
-                .ok_or_else(|| ServiceError::Internal("invalid work path".into()))?,
-        )
-        .await?;
-        Ok((id, directory, StagedInput {
-            hash:      hex::encode(hash.finalize()),
-            file_size: Some(bytes),
-        }))
+        Ok((hex::encode(hash.finalize()), bytes))
     }
 
     pub(super) async fn find_idempotent_task(
@@ -305,7 +427,6 @@ impl DatalithService {
         key: Option<String>,
         directory: PendingDirectory,
     ) -> Result<Task, ServiceError> {
-        validate_idempotency_key(key.as_deref())?;
         let service = self.clone();
         // Keep the input until SQLite saves the task, even if the HTTP request ends.
         tokio::spawn(async move {
@@ -768,12 +889,12 @@ impl DatalithService {
         }
         match result {
             Ok(result) => {
-                let mut tx = self.0.datalith.0.db.begin_with("BEGIN IMMEDIATE").await?;
                 if task.status == TaskStatus::Cancelling {
                     task.status = TaskStatus::Cancelled;
-                    drop(tx);
+                    task.stage = status_name(task.status).into();
                     self.save_task(&mut task).await?;
                 } else {
+                    let mut tx = self.0.datalith.0.db.begin_with("BEGIN IMMEDIATE").await?;
                     Self::complete_task_tx(&mut tx, id, &result).await?;
                     tx.commit().await?;
                 }
@@ -991,7 +1112,7 @@ impl DatalithService {
                 "audio and video processing are disabled".into(),
             ));
         } else if options.file_type.is_none()
-            && let Some(detected) = crate::functions::detect_file_type_by_path(&input, false).await
+            && let Some(detected) = crate::functions::detect_file_type_by_path(&input).await
         {
             mime = detected.to_string();
         }
@@ -1135,7 +1256,7 @@ mod tests {
         assert_eq!(expected, request_fingerprint(&work).unwrap());
 
         let source = Uuid::new_v4();
-        let process = serde_json::json!({"Process": {"source": source, "options": {"image": options["image"]}}});
+        let process = serde_json::json!({"Process": {"source": source, "options": {"kind": "image", "image": options["image"]}}});
         let expected = hex::encode(Sha256::digest(serde_json::to_vec(&process).unwrap()));
         assert_eq!(expected, process_fingerprint(source, &ProcessOptions::default()).unwrap());
         let mut changed = ProcessOptions::default();

@@ -9,7 +9,6 @@ use magic::{
     Cookie,
     cookie::{Flags, Load},
 };
-use tokio::time;
 
 #[derive(Debug)]
 pub(crate) struct MagicCookie<'a> {
@@ -37,6 +36,7 @@ pub(crate) struct MagicCookiePool {
     cookies: Vec<(AtomicBool, Cookie<Load>)>,
 }
 
+// SAFETY: A cookie is used only through `MagicCookie`, which takes it alone with the `AtomicBool` flag, and libmagic cookies can move between threads.
 unsafe impl Send for MagicCookiePool {}
 unsafe impl Sync for MagicCookiePool {}
 
@@ -71,22 +71,6 @@ impl MagicCookiePool {
 }
 
 impl MagicCookiePool {
-    pub(crate) async fn acquire_cookie(&self) -> MagicCookie<'_> {
-        loop {
-            for (using, cookie) in self.cookies.iter() {
-                if using.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
-                {
-                    return MagicCookie {
-                        using,
-                        cookie,
-                    };
-                }
-            }
-
-            time::sleep(Duration::from_millis(10)).await;
-        }
-    }
-
     pub(crate) fn acquire_cookie_sync(&self) -> MagicCookie<'_> {
         loop {
             for (using, cookie) in self.cookies.iter() {

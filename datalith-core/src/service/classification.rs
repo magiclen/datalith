@@ -18,7 +18,7 @@ pub(super) async fn detect(
     }
     let mut header = Vec::new();
     File::open(input).await?.take(4096).read_to_end(&mut header).await?;
-    let mime = crate::functions::detect_file_type_by_path(input, false).await;
+    let mime = crate::functions::detect_file_type_by_path(input).await;
     if image_header(&header) || mime.as_ref().is_some_and(|mime| mime.type_() == crate::mime::IMAGE)
     {
         return Ok(MediaKind::Image);

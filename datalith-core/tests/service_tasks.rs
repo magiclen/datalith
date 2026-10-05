@@ -26,6 +26,72 @@ async fn wait_task(service: &DatalithService, id: Uuid) -> Task {
     .unwrap()
 }
 
+#[tokio::test]
+async fn file_uploads_and_imports_survive_removing_the_source_path() {
+    let directory = TempDir::new().unwrap();
+    let source_path = directory.path().join("source.txt");
+    fs::write(&source_path, CONTENT).await.unwrap();
+    let environment = directory.path().join("store");
+    let service =
+        DatalithService::new(Datalith::new(&environment).await.unwrap(), ServiceConfig::default())
+            .await
+            .unwrap();
+    let options = UploadOptions {
+        file_name: Some("source.txt".into()),
+        ..UploadOptions::default()
+    };
+    let task = service
+        .submit_upload_file(&source_path, options.clone(), Some("file-upload".into()))
+        .await
+        .unwrap();
+    fs::remove_file(source_path).await.unwrap();
+    let media: Media =
+        serde_json::from_value(wait_task(&service, task.id).await.result.unwrap()).unwrap();
+    let repeated =
+        service.submit_upload(CONTENT, options, Some("file-upload".into())).await.unwrap();
+    assert_eq!(task.id, repeated.id);
+    let export = service.submit_export(Default::default(), None).await.unwrap();
+    wait_task(&service, export.id).await;
+    let mut archive = service.open_artifact(export.id).await.unwrap();
+    let mut bytes = Vec::new();
+    archive.file.read_to_end(&mut bytes).await.unwrap();
+    drop(archive);
+    service.close().await.unwrap();
+    drop(service);
+
+    let service =
+        DatalithService::new(Datalith::new(&environment).await.unwrap(), ServiceConfig::default())
+            .await
+            .unwrap();
+    let mut content =
+        service.open_content(media.id, ContentRequest::default(), false).await.unwrap();
+    let mut actual = Vec::new();
+    content.file.read_to_end(&mut actual).await.unwrap();
+    assert_eq!(CONTENT, actual);
+    drop(content);
+
+    let import_path = directory.path().join("archive.tar");
+    fs::write(&import_path, bytes).await.unwrap();
+    let target_directory = TempDir::new().unwrap();
+    let target = DatalithService::new(
+        Datalith::new(target_directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    let task = target.submit_import_file(&import_path, None).await.unwrap();
+    fs::remove_file(import_path).await.unwrap();
+    assert_eq!(1, wait_task(&target, task.id).await.result.unwrap()["imported"]);
+    let mut content =
+        target.open_content(media.id, ContentRequest::default(), false).await.unwrap();
+    actual.clear();
+    content.file.read_to_end(&mut actual).await.unwrap();
+    assert_eq!(CONTENT, actual);
+    drop(content);
+    service.close().await.unwrap();
+    target.close().await.unwrap();
+}
+
 async fn store_pending_task(
     directory: &Path,
     pool: &SqlitePool,
@@ -35,7 +101,10 @@ async fn store_pending_task(
     let id = Uuid::new_v4();
     let path = directory.join("datalith.tasks").join(id.to_string());
     fs::create_dir_all(&path).await.unwrap();
-    fs::write(path.join("input"), CONTENT).await.unwrap();
+    let source = directory.join(format!("{id}.source"));
+    fs::write(&source, CONTENT).await.unwrap();
+    fs::hard_link(&source, path.join("input")).await.unwrap();
+    fs::remove_file(source).await.unwrap();
     let options = UploadOptions::default();
     let hash = hex::encode(Sha256::digest(CONTENT));
     let work = format!(
@@ -133,7 +202,7 @@ async fn restart_recovers_work_without_duplicate_results() {
         .unwrap();
     let frozen: serde_json::Value = serde_json::from_str(&work).unwrap();
     assert_eq!(12_000_000, frozen["Upload"]["recipe"]["video_bitrate"]);
-    assert_eq!(1, frozen["Upload"]["recipe"]["version"]);
+    assert_eq!(2, frozen["Upload"]["recipe"]["version"]);
     pool.close().await;
 
     let mut config = ServiceConfig::default();

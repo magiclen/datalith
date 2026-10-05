@@ -5,7 +5,7 @@ mod routes;
 #[cfg(test)]
 mod tests;
 
-use std::{io::Cursor, net::IpAddr};
+use std::{io::Cursor, net::IpAddr, path::PathBuf};
 
 use datalith_core::{DatalithService, ServiceError, Uuid, chrono::Utc};
 use rocket::{
@@ -24,7 +24,9 @@ fn swagger_config() -> SwaggerConfig<'static> {
 
 #[derive(Debug)]
 pub(crate) struct ServerConfig {
-    max_file_size: u64,
+    max_file_size:       u64,
+    // Keep uploads on the data file system so that the service can link them instead of copying them.
+    temporary_directory: PathBuf,
 }
 
 #[derive(Debug)]
@@ -144,7 +146,12 @@ fn error_catcher(status: Status, _: &Request<'_>) -> ApiError {
     }
 }
 
-pub fn create(address: IpAddr, port: u16, max_file_size: u64) -> Rocket<Build> {
+pub fn create(
+    address: IpAddr,
+    port: u16,
+    max_file_size: u64,
+    temporary_directory: PathBuf,
+) -> Rocket<Build> {
     let figment = Config::figment()
         .merge(("ident", "Datalith"))
         .merge(("address", address))
@@ -153,6 +160,7 @@ pub fn create(address: IpAddr, port: u16, max_file_size: u64) -> Rocket<Build> {
     rocket::custom(figment)
         .manage(ServerConfig {
             max_file_size,
+            temporary_directory,
         })
         .register("/", catchers![error_catcher])
         .attach(AdHoc::on_response("Response metadata", |request, response| {
@@ -189,7 +197,6 @@ pub fn create(address: IpAddr, port: u16, max_file_size: u64) -> Rocket<Build> {
             routes::delete,
             routes::capabilities,
             routes::openapi,
-            routes::legacy_openapi,
             routes::docs,
             routes::player,
             routes::playback_session,

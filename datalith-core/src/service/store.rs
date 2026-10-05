@@ -185,7 +185,6 @@ impl DatalithService {
             repeatable: !media.single_use || playback,
             temporary: media.expires_at.is_some() || media.single_use,
             _file_guard: Some(guard),
-            _artifact_guard: None,
         })
     }
 
@@ -312,6 +311,8 @@ impl DatalithService {
             size = size.checked_add(n as u64).ok_or(ServiceError::PayloadTooLarge)?;
             hasher.update(&buffer[..n]);
         }
+        // Sync here, outside the publish transaction, so publishing only needs one directory sync.
+        file.sync_all().await?;
         Ok(PreparedFile {
             path,
             metadata: MediaFile {
@@ -334,9 +335,13 @@ impl DatalithService {
     ) -> Result<(), ServiceError> {
         super::validate_assets(media, inventory.as_deref())?;
         let mut inventory = inventory;
+        let mut linked = false;
         for file in super::files_mut(media, inventory.as_deref_mut()) {
             let source_id = file.id;
-            self.register_file(tx, file, prepared, guards, source_id, false).await?;
+            linked |= self.register_file(tx, file, prepared, guards, source_id, false).await?;
+        }
+        if linked {
+            self.sync_file_directory().await?;
         }
         insert_media(tx, media, inventory.as_deref()).await?;
         Ok(())
@@ -350,21 +355,28 @@ impl DatalithService {
         prepared: &HashMap<Uuid, PreparedFile>,
         guards: &mut Vec<OpenGuard>,
         ids: &mut HashMap<Uuid, Uuid>,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<bool, ServiceError> {
         super::validate_assets(media, inventory.as_deref())?;
         let mut inventory = inventory;
+        let mut linked = false;
         for file in super::files_mut(media, inventory.as_deref_mut()) {
             let source_id = file.id;
             if let Some(id) = ids.get(&source_id) {
                 file.id = *id;
             }
-            self.register_file(tx, file, prepared, guards, source_id, true).await?;
+            linked |= self.register_file(tx, file, prepared, guards, source_id, true).await?;
             ids.insert(source_id, file.id);
         }
         insert_media(tx, media, inventory.as_deref()).await?;
-        Ok(())
+        Ok(linked)
     }
 
+    // Prepared files are synced before publishing, so one directory sync makes all new links durable before the commit.
+    pub(super) async fn sync_file_directory(&self) -> Result<(), ServiceError> {
+        sync_directory(&self.0.datalith.get_environment().join(PATH_FILE_DIRECTORY)).await
+    }
+
+    // Return `true` when a new file was linked into the file directory.
     async fn register_file(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
@@ -373,7 +385,7 @@ impl DatalithService {
         guards: &mut Vec<OpenGuard>,
         source_id: Uuid,
         preserve_id: bool,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<bool, ServiceError> {
         let hash = hex::decode(&metadata.sha256)
             .map_err(|_| ServiceError::Invalid("invalid SHA-256".into()))?;
         let taken: Option<Vec<u8>> = sqlx::query_scalar(
@@ -392,7 +404,7 @@ impl DatalithService {
                 .bind(metadata.id)
                 .execute(&mut **tx)
                 .await?;
-            return Ok(());
+            return Ok(false);
         }
         // Legacy files keep the hash in `files`, while aliased files keep it in `blob_files`; each lookup uses its own index.
         let existing: Option<(Uuid, Uuid)> = sqlx::query_as(
@@ -415,7 +427,7 @@ impl DatalithService {
                 .bind(id)
                 .execute(&mut **tx)
                 .await?;
-            return Ok(());
+            return Ok(false);
         }
         let directory = self.0.datalith.get_environment().join(PATH_FILE_DIRECTORY);
         fs::create_dir_all(&directory).await?;
@@ -440,8 +452,8 @@ impl DatalithService {
         guards.push(
             OpenGuard::try_new(self.0.datalith.clone(), metadata.id).ok_or(ServiceError::Busy)?,
         );
-        let storage_id = if let Some((_, storage_id)) = existing {
-            storage_id
+        let (storage_id, linked) = if let Some((_, storage_id)) = existing {
+            (storage_id, false)
         } else {
             let source = prepared
                 .get(&source_id)
@@ -458,10 +470,7 @@ impl DatalithService {
                 fs::File::open(temporary.path()).await?.sync_all().await?;
                 temporary.persist_noclobber(&destination).map_err(|error| error.error)?;
             }
-            // Image outputs are not synced when they are written.
-            fs::File::open(&destination).await?.sync_all().await?;
-            sync_directory(&directory).await?;
-            metadata.id
+            (metadata.id, true)
         };
         let stored_hash = if storage_id == metadata.id {
             hash.clone()
@@ -490,7 +499,7 @@ impl DatalithService {
             .bind(storage_id)
             .execute(&mut **tx)
             .await?;
-        Ok(())
+        Ok(linked)
     }
 
     /// Open the archive created by a finished export task.
@@ -504,7 +513,7 @@ impl DatalithService {
         id: Uuid,
         session: Option<&str>,
     ) -> Result<Content, ServiceError> {
-        let guard = self.0.artifacts.clone().read_owned().await;
+        let guard = self.0.artifacts.read().await;
         let task = self.get_task(id).await?.ok_or(ServiceError::NotFound)?;
         if !matches!(task.kind.as_str(), "export" | "mp4_export")
             || task.status != super::TaskStatus::Succeeded
@@ -538,31 +547,191 @@ impl DatalithService {
                 ServiceError::Internal("export task has no artifact metadata".into())
             })?,
         )?;
+        let file = fs::File::open(path).await?;
+        // An open file stays readable after cleanup removes its path, so cleanup does not wait for the download.
+        drop(guard);
         Ok(Content {
-            file: fs::File::open(path).await?,
+            file,
             metadata,
             created_at: task.updated_at,
             single_use,
             repeatable: true,
             temporary: true,
             _file_guard: None,
-            _artifact_guard: Some(guard),
         })
     }
 }
 
 pub(super) async fn sync_directory(path: &Path) -> Result<(), ServiceError> {
-    #[cfg(unix)]
     fs::File::open(path).await?.sync_all().await?;
-    #[cfg(not(unix))]
-    let _ = path;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use sha2::Digest;
+    use tokio::io::AsyncReadExt;
+
     use super::*;
-    use crate::{ServiceConfig, TaskStatus, UploadOptions};
+    use crate::{ServiceConfig, Task, TaskStatus, UploadOptions};
+
+    async fn finished(service: &DatalithService, id: Uuid) -> Task {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let task = service.get_task(id).await.unwrap().unwrap();
+                if task.status.is_terminal() {
+                    assert_eq!(TaskStatus::Succeeded, task.status, "{:?}", task.error);
+                    return task;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn wait_until(expiry: chrono::DateTime<Utc>) {
+        while Utc::now() <= expiry {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    async fn read_remaining(content: &mut Content, first: &[u8], expected: &[u8]) {
+        let mut bytes = first.to_vec();
+        content.file.read_to_end(&mut bytes).await.unwrap();
+        assert_eq!(expected, bytes);
+        assert_eq!(hex::encode(sha2::Sha256::digest(&bytes)), content.metadata.sha256);
+    }
+
+    #[tokio::test]
+    async fn archive_cleanup_does_not_wait_for_its_open_reader() {
+        let directory = tempfile::tempdir().unwrap();
+        let service =
+            DatalithService::new(Datalith::new(directory.path()).await.unwrap(), ServiceConfig {
+                task_retention_seconds: 1,
+                ..ServiceConfig::default()
+            })
+            .await
+            .unwrap();
+        let upload = service
+            .submit_upload(b"archived content".as_slice(), Default::default(), None)
+            .await
+            .unwrap();
+        finished(&service, upload.id).await;
+        let task = service.submit_export(Default::default(), None).await.unwrap();
+        let task = finished(&service, task.id).await;
+        let path = service.work_directory(task.id).join("export.tar");
+        let expected = fs::read(&path).await.unwrap();
+        let mut content = service.open_artifact(task.id).await.unwrap();
+        let mut first = [0; 64];
+        content.file.read_exact(&mut first).await.unwrap();
+        wait_until(task.updated_at + chrono::Duration::milliseconds(1001)).await;
+        service.expire_tasks().await.unwrap();
+        assert!(!fs::try_exists(path).await.unwrap());
+        assert!(matches!(service.open_artifact(task.id).await, Err(ServiceError::NotFound)));
+        read_remaining(&mut content, &first, &expected).await;
+        drop(content);
+        service.close().await.unwrap();
+    }
+
+    #[cfg(feature = "av-convert")]
+    #[tokio::test]
+    async fn mp4_cleanup_does_not_wait_for_its_open_reader() {
+        use crate::{Mp4ExportOptions, Mp4ExportResult, VideoOptions, VideoVariantSpec};
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = ServiceConfig {
+            mp4_export_retention_seconds: 1,
+            ..ServiceConfig::default()
+        };
+        if let Some(path) = std::env::var_os("DATALITH_FFMPEG") {
+            config.av.ffmpeg = path.into();
+        }
+        if let Some(path) = std::env::var_os("DATALITH_FFPROBE") {
+            config.av.ffprobe = path.into();
+        }
+        let ffmpeg = config.av.ffmpeg.clone();
+        let service = DatalithService::new(
+            Datalith::new(directory.path().join("store")).await.unwrap(),
+            config,
+        )
+        .await
+        .unwrap();
+        if !service.0.av.video_available {
+            service.close().await.unwrap();
+            return;
+        }
+        let input = directory.path().join("source.mp4");
+        let output = tokio::process::Command::new(ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:size=256x144:rate=12:duration=1",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+            ])
+            .arg(&input)
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let upload = service
+            .submit_upload_file(
+                input,
+                UploadOptions {
+                    kind: MediaKind::Video,
+                    video: VideoOptions {
+                        variants: vec![VideoVariantSpec {
+                            resolution: 144, fps: 12
+                        }],
+                        ..VideoOptions::default()
+                    },
+                    ..UploadOptions::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let media: Media =
+            serde_json::from_value(finished(&service, upload.id).await.result.unwrap()).unwrap();
+        let task = service
+            .submit_mp4_export(
+                media.id,
+                Mp4ExportOptions {
+                    variant: "144p12".into()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let result: Mp4ExportResult =
+            serde_json::from_value(finished(&service, task.id).await.result.unwrap()).unwrap();
+        let path = service.work_directory(task.id).join("export.mp4");
+        let expected = fs::read(&path).await.unwrap();
+        let mut content = service.open_artifact(task.id).await.unwrap();
+        let mut first = [0; 64];
+        content.file.read_exact(&mut first).await.unwrap();
+        wait_until(result.expires_at).await;
+        service.expire_mp4_artifacts().await.unwrap();
+        assert!(!fs::try_exists(path).await.unwrap());
+        assert!(matches!(service.open_artifact(task.id).await, Err(ServiceError::NotFound)));
+        read_remaining(&mut content, &first, &expected).await;
+        drop(content);
+        service.close().await.unwrap();
+    }
 
     #[tokio::test]
     async fn released_content_is_collected_after_its_reader_closes() {

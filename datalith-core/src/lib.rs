@@ -2,6 +2,7 @@
 # Datalith Core
 
 Datalith Core stores file contents on disk and metadata in SQLite.
+Datalith Core supports Linux.
 Files with the same content share one stored copy, and one process owns each data folder.
 
 Use [`DatalithService`] to upload files, process media, and move data through background tasks.
@@ -36,8 +37,7 @@ Video conversion needs explicit resolution and frame-rate pairs.
 [`Retention`] controls expiry and single-use access.
 [`ProcessingMode::Trust`] can reuse content that meets the output requirements.
 
-The older direct storage methods on [`Datalith`] remain available for existing applications.
-Use `DatalithService` for new applications, and avoid mixing its writes with direct storage writes.
+Version 1 stores are upgraded automatically, keeping their original content available through the media API.
 */
 
 pub extern crate chrono;
@@ -46,34 +46,13 @@ pub extern crate uuid;
 
 mod datalith;
 mod datalith_errors;
-mod datalith_file;
 mod functions;
 mod guard;
-#[cfg(feature = "image-convert")]
-mod image;
 #[cfg(feature = "magic")]
 mod magic_cookie_pool;
-#[cfg(feature = "manager")]
-mod manager;
-mod resources;
 mod service;
 
 pub use datalith::*;
-pub use datalith_errors::*;
-pub use datalith_file::*;
-#[cfg(feature = "image-convert")]
-pub use functions::get_image_extension;
-#[cfg(feature = "image-convert")]
-pub use image::*;
-#[cfg(feature = "manager")]
-pub use manager::*;
-use mime::{APPLICATION_OCTET_STREAM, Mime};
-pub use rdb_pagination::{OrderMethod, OrderMethodValue, Pagination, PaginationOptions};
-pub use resources::*;
+pub use datalith_errors::DatalithCreateError;
+pub(crate) use datalith_errors::DatalithReadError;
 pub use service::*;
-
-/// The default MIME type.
-pub const DEFAULT_MIME_TYPE: Mime = APPLICATION_OCTET_STREAM;
-
-/// An encrypted file ID for use in a URL.
-pub type IDToken = String;

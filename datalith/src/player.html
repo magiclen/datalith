@@ -132,6 +132,44 @@
         return Number.isFinite(value) && value > 0 ? value : NaN;
       }
 
+      function frameCounts() {
+        const quality = video.getVideoPlaybackQuality?.();
+        const dropped = quality?.droppedVideoFrames ?? video.webkitDroppedFrameCount;
+        const total = quality?.totalVideoFrames ?? video.webkitDecodedFrameCount;
+        return Number.isFinite(dropped) && Number.isFinite(total) && dropped >= 0 && total >= dropped ? { dropped, total } : null;
+      }
+
+      function resetFrameHealth(s) {
+        s.frameWindow = null;
+        s.badFrameWindows = 0;
+      }
+
+      function checkFrameHealth(s, now) {
+        if (!s.active || s.profile !== "flac" || s.switching || video.paused || video.seeking || video.ended || !s.firstPlay) {
+          resetFrameHealth(s);
+          return false;
+        }
+        const counts = frameCounts();
+        if (!counts) {
+          resetFrameHealth(s);
+          return false;
+        }
+        const previous = s.frameWindow;
+        if (!previous || counts.dropped < previous.dropped || counts.total < previous.total) {
+          resetFrameHealth(s);
+          s.frameWindow = { ...counts, time: now };
+          return false;
+        }
+        if (now - previous.time < 5000) return false;
+        const dropped = counts.dropped - previous.dropped;
+        const total = counts.total - previous.total;
+        s.frameWindow = { ...counts, time: now };
+        s.badFrameWindows = total > 0 && dropped <= total && dropped * 5 >= total ? s.badFrameWindows + 1 : 0;
+        if (s.badFrameWindows < 2) return false;
+        fallback(s, "at least 20% dropped frames in two consecutive 5-second windows");
+        return true;
+      }
+
       function rate(value) {
         return Number.isFinite(value) && value > 0 ? `${(value / 1000000).toFixed(2)} Mbps` : "Not measured";
       }
@@ -235,6 +273,7 @@
       function destroyPlayer(s) {
         s.sourceGeneration++;
         s.active = false;
+        resetFrameHealth(s);
         const hls = s.hls;
         s.hls = null;
         if (hls) hls.destroy();
@@ -460,7 +499,7 @@
           state.abort.abort();
           destroyPlayer(state);
         }
-        const s = { media: null, abort: new AbortController(), hls: null, engine: null, active: false, busy: true, switching: false, sourceGeneration: 0, session: null, claimKey: null, samples: 0, measuredAt: 0, throughput: NaN, flacEntries: [], flacInspected: false, flacNote: null, cooldownUntil: 0, manual: null, manualLevel: -2, manualChangedAt: 0, lastLevel: null, stableSince: null, lowBufferSince: null, waitingAt: null, pendingRestore: null, stalls: 0, startupSeconds: null, startupAt: 0, firstPlay: false, lastMetricsAt: 0, lastTime: 0, lastAdvanceAt: Date.now() };
+        const s = { media: null, abort: new AbortController(), hls: null, engine: null, active: false, busy: true, switching: false, sourceGeneration: 0, session: null, claimKey: null, samples: 0, measuredAt: 0, throughput: NaN, flacEntries: [], flacInspected: false, flacNote: null, cooldownUntil: 0, frameWindow: null, badFrameWindows: 0, manual: null, manualLevel: -2, manualChangedAt: 0, lastLevel: null, stableSince: null, lowBufferSince: null, waitingAt: null, pendingRestore: null, stalls: 0, startupSeconds: null, startupAt: 0, firstPlay: false, lastMetricsAt: 0, lastTime: 0, lastAdvanceAt: Date.now() };
         state = s;
         setControls(s);
         status("Loading media…");
@@ -532,11 +571,12 @@
           s.startupSeconds = (performance.now() - s.startupAt) / 1000;
           log(`Startup: ${s.startupSeconds.toFixed(2)} seconds.`);
         }
+        checkFrameHealth(s, Date.now());
         status(`Playing with ${playbackLabel(s)}.`);
       });
-      video.addEventListener("pause", () => { if (state?.active && !state.switching) state.stableSince = null; });
-      video.addEventListener("seeking", () => { if (state?.active) { state.stableSince = null; state.waitingAt = null; } });
-      video.addEventListener("seeked", () => { if (state?.active && !video.paused) { state.stableSince = Date.now(); state.lastAdvanceAt = Date.now(); } });
+      video.addEventListener("pause", () => { if (state?.active) { resetFrameHealth(state); if (!state.switching) state.stableSince = null; } });
+      video.addEventListener("seeking", () => { if (state?.active) { resetFrameHealth(state); state.stableSince = null; state.waitingAt = null; } });
+      video.addEventListener("seeked", () => { if (state?.active && !video.paused) { state.stableSince = Date.now(); state.lastAdvanceAt = Date.now(); checkFrameHealth(state, Date.now()); } });
       video.addEventListener("waiting", () => {
         const s = state;
         if (!s?.active || s.switching || video.seeking || video.paused || !s.firstPlay) return;
@@ -567,7 +607,7 @@
         }
         const buffer = bufferAhead();
         const estimate = measuredBandwidth(s);
-        const dropped = video.getVideoPlaybackQuality?.().droppedVideoFrames;
+        const dropped = frameCounts()?.dropped;
         ui.buffer.textContent = `${buffer.toFixed(1)} seconds`;
         ui.bandwidth.textContent = s.engine === "native HLS" ? "Not observable" : rate(estimate);
         ui.throughput.textContent = s.engine === "native HLS" ? "Not observable" : rate(s.throughput);
@@ -575,6 +615,7 @@
         ui.startup.textContent = `${s.startupSeconds === null ? "Pending" : s.startupSeconds.toFixed(2) + "s"} / ${s.stalls}`;
         if (s.engine === "native HLS") ui.current.textContent = `System quality / ${s.profile.toUpperCase()}`;
         setControls(s);
+        if (checkFrameHealth(s, now)) return;
         if (s.switching || video.paused || video.seeking || video.ended || !s.firstPlay) return;
         if (Math.abs(video.currentTime - s.lastTime) > 0.1) {
           s.lastTime = video.currentTime;

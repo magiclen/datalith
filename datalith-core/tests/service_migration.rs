@@ -12,6 +12,14 @@ use tokio::{fs, io::AsyncReadExt};
 const PNG: &[u8] = include_bytes!("data/image.png");
 const WEBP: &[u8] = include_bytes!("data/migration-thumbnail.webp");
 const STANDALONE: &[u8] = b"A standalone legacy file.";
+const ORIGINAL_ID: Uuid = Uuid::from_u128(1);
+const ALIAS_ID: Uuid = Uuid::from_u128(2);
+const WEBP_ID: Uuid = Uuid::from_u128(3);
+const STANDALONE_ID: Uuid = Uuid::from_u128(4);
+const MISSING_ID: Uuid = Uuid::from_u128(5);
+const RESOURCE_ID: Uuid = Uuid::from_u128(11);
+const IMAGE_ID: Uuid = Uuid::from_u128(12);
+const TEMPORARY_RESOURCE_ID: Uuid = Uuid::from_u128(13);
 
 async fn legacy_file(
     pool: &SqlitePool,
@@ -44,14 +52,10 @@ async fn legacy_file(
         .unwrap();
 }
 
-#[tokio::test]
-async fn migrate_legacy_ids_images_aliases_and_reference_counts() {
-    let directory = TempDir::new().unwrap();
-    fs::create_dir(directory.path().join(PATH_FILE_DIRECTORY)).await.unwrap();
+async fn legacy_store(directory: &Path) -> i64 {
+    fs::create_dir(directory.join(PATH_FILE_DIRECTORY)).await.unwrap();
     let pool = SqlitePool::connect_with(
-        SqliteConnectOptions::new()
-            .filename(directory.path().join(PATH_DB_FILE))
-            .create_if_missing(true),
+        SqliteConnectOptions::new().filename(directory.join(PATH_DB_FILE)).create_if_missing(true),
     )
     .await
     .unwrap();
@@ -68,25 +72,16 @@ async fn migrate_legacy_ids_images_aliases_and_reference_counts() {
     .await
     .unwrap();
 
-    let original_id = Uuid::from_u128(1);
-    let alias_id = Uuid::from_u128(2);
-    let webp_id = Uuid::from_u128(3);
-    let standalone_id = Uuid::from_u128(4);
-    let missing_id = Uuid::from_u128(5);
-    let resource_id = Uuid::from_u128(11);
-    let image_id = Uuid::from_u128(12);
-    let temporary_resource_id = Uuid::from_u128(13);
     let expiry = Utc::now().timestamp_millis() + 600_000;
-    legacy_file(&pool, directory.path(), original_id, PNG, "image/png", None, 8).await;
-    legacy_file(&pool, directory.path(), alias_id, PNG, "image/png", Some(expiry), 1).await;
-    legacy_file(&pool, directory.path(), webp_id, WEBP, "image/webp", None, 1).await;
-    legacy_file(&pool, directory.path(), standalone_id, STANDALONE, "text/plain", None, 5).await;
-    legacy_file(&pool, directory.path(), missing_id, STANDALONE, "text/plain", Some(expiry), 1)
-        .await;
+    legacy_file(&pool, directory, ORIGINAL_ID, PNG, "image/png", None, 8).await;
+    legacy_file(&pool, directory, ALIAS_ID, PNG, "image/png", Some(expiry), 1).await;
+    legacy_file(&pool, directory, WEBP_ID, WEBP, "image/webp", None, 1).await;
+    legacy_file(&pool, directory, STANDALONE_ID, STANDALONE, "text/plain", None, 5).await;
+    legacy_file(&pool, directory, MISSING_ID, STANDALONE, "text/plain", Some(expiry), 1).await;
     let missing_path =
-        directory.path().join(PATH_FILE_DIRECTORY).join(format!("{:x}", missing_id.as_u128()));
+        directory.join(PATH_FILE_DIRECTORY).join(format!("{:x}", MISSING_ID.as_u128()));
     fs::remove_file(missing_path).await.unwrap();
-    for (id, expires_at) in [(resource_id, None), (temporary_resource_id, Some(expiry))] {
+    for (id, expires_at) in [(RESOURCE_ID, None), (TEMPORARY_RESOURCE_ID, Some(expiry))] {
         sqlx::query(
             "INSERT INTO resources(id,created_at,file_type,file_name,file_id,expired_at) \
              VALUES(?,?,?,?,?,?)",
@@ -95,7 +90,7 @@ async fn migrate_legacy_ids_images_aliases_and_reference_counts() {
         .bind(1_700_000_000_000i64)
         .bind("image/png")
         .bind("photo.png")
-        .bind(original_id)
+        .bind(ORIGINAL_ID)
         .bind(expires_at)
         .execute(&pool)
         .await
@@ -108,20 +103,20 @@ async fn migrate_legacy_ids_images_aliases_and_reference_counts() {
          images(id,created_at,image_stem,image_width,image_height,original_file_id,\
          has_alpha_channel) VALUES(?,?,?,?,?,?,1)",
     )
-    .bind(image_id)
+    .bind(IMAGE_ID)
     .bind(1_700_000_000_000i64)
     .bind("photo")
     .bind(width)
     .bind(height)
-    .bind(original_id)
+    .bind(ORIGINAL_ID)
     .execute(&pool)
     .await
     .unwrap();
-    for (fallback, file_id) in [(false, webp_id), (true, original_id)] {
+    for (fallback, file_id) in [(false, WEBP_ID), (true, ORIGINAL_ID)] {
         sqlx::query(
-            "INSERT INTO image_thumbnails(image_id,multiplier,fallback,file_id) VALUES(?,1,?,?)",
+            "INSERT INTO image_thumbnails(IMAGE_ID,multiplier,fallback,file_id) VALUES(?,1,?,?)",
         )
-        .bind(image_id)
+        .bind(IMAGE_ID)
         .bind(fallback)
         .bind(file_id)
         .execute(&pool)
@@ -129,6 +124,15 @@ async fn migrate_legacy_ids_images_aliases_and_reference_counts() {
         .unwrap();
     }
     pool.close().await;
+    expiry
+}
+
+#[tokio::test]
+async fn migrate_legacy_ids_images_aliases_and_reference_counts() {
+    let directory = TempDir::new().unwrap();
+    let expiry = legacy_store(directory.path()).await;
+    let width = u32::from_be_bytes(PNG[16..20].try_into().unwrap());
+    let height = u32::from_be_bytes(PNG[20..24].try_into().unwrap());
     let pending_backup = directory.path().join(format!("{PATH_DB_FILE}.v1.bak.pending"));
     fs::write(&pending_backup, b"An interrupted backup.").await.unwrap();
 
@@ -156,26 +160,26 @@ async fn migrate_legacy_ids_images_aliases_and_reference_counts() {
             .unwrap();
     assert_eq!("1", version);
     let old_count: i64 = sqlx::query_scalar("SELECT count FROM files WHERE id=?")
-        .bind(original_id)
+        .bind(ORIGINAL_ID)
         .fetch_one(&backup)
         .await
         .unwrap();
     assert_eq!(8, old_count);
     backup.close().await;
     assert_eq!("5", service.list_media(1, 100).await.unwrap().total);
-    let resource = service.get_media(resource_id).await.unwrap().unwrap();
-    assert_eq!(original_id, resource.original.unwrap().id);
+    let resource = service.get_media(RESOURCE_ID).await.unwrap().unwrap();
+    assert_eq!(ORIGINAL_ID, resource.original.unwrap().id);
     assert_eq!("photo.png", resource.file_name);
     assert_eq!(1_700_000_000_000i64, resource.created_at.timestamp_millis());
-    let image = service.get_media(image_id).await.unwrap().unwrap();
+    let image = service.get_media(IMAGE_ID).await.unwrap().unwrap();
     assert_eq!(MediaKind::Image, image.kind);
-    assert_eq!(original_id, image.original.unwrap().id);
+    assert_eq!(ORIGINAL_ID, image.original.unwrap().id);
     assert_eq!(2, image.variants.len());
     assert!(image.variants.iter().all(|variant| variant.recipe.is_none()
         && variant.name == "default"
         && variant.width == width
         && variant.height == height));
-    let temporary = service.get_media(temporary_resource_id).await.unwrap().unwrap();
+    let temporary = service.get_media(TEMPORARY_RESOURCE_ID).await.unwrap().unwrap();
     assert!(temporary.single_use);
     assert_eq!(expiry, temporary.expires_at.unwrap().timestamp_millis());
 
@@ -185,41 +189,58 @@ async fn migrate_legacy_ids_images_aliases_and_reference_counts() {
     .await
     .unwrap();
     let count: i64 = sqlx::query_scalar("SELECT count FROM files WHERE id=?")
-        .bind(original_id)
+        .bind(ORIGINAL_ID)
         .fetch_one(&pool)
         .await
         .unwrap();
     assert_eq!(4, count);
     let count: i64 = sqlx::query_scalar("SELECT count FROM files WHERE id=?")
-        .bind(standalone_id)
+        .bind(STANDALONE_ID)
         .fetch_one(&pool)
         .await
         .unwrap();
     assert_eq!(1, count);
     let storage_id: Uuid = sqlx::query_scalar("SELECT storage_id FROM blob_files WHERE file_id=?")
-        .bind(alias_id)
+        .bind(ALIAS_ID)
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(original_id, storage_id);
+    assert_eq!(ORIGINAL_ID, storage_id);
     assert!(
         !fs::try_exists(
-            directory.path().join(PATH_FILE_DIRECTORY).join(format!("{:x}", alias_id.as_u128()))
+            directory.path().join(PATH_FILE_DIRECTORY).join(format!("{:x}", ALIAS_ID.as_u128()))
         )
         .await
         .unwrap()
     );
     pool.close().await;
 
-    let mut alias = service.open_content(alias_id, ContentRequest::default(), false).await.unwrap();
+    assert_current_schema(directory.path()).await;
+    assert_migrated_content(&service).await;
+    let backup_path = directory.path().join(format!("{PATH_DB_FILE}.v1.bak"));
+    let backup_bytes = fs::read(&backup_path).await.unwrap();
+    service.close().await.unwrap();
+    drop(service);
+
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert_current_schema(directory.path()).await;
+    assert_migrated_content(&service).await;
+    assert_eq!(backup_bytes, fs::read(&backup_path).await.unwrap());
+
+    let mut alias = service.open_content(ALIAS_ID, ContentRequest::default(), false).await.unwrap();
     assert_eq!(hex::encode(Sha256::digest(PNG)), alias.metadata.sha256);
     let mut bytes = Vec::new();
     alias.file.read_to_end(&mut bytes).await.unwrap();
     assert_eq!(PNG, bytes);
     drop(alias);
-    assert!(service.delete_media(image_id).await.unwrap());
-    assert!(service.delete_media(resource_id).await.unwrap());
-    assert!(service.delete_media(standalone_id).await.unwrap());
+    assert!(service.delete_media(IMAGE_ID).await.unwrap());
+    assert!(service.delete_media(RESOURCE_ID).await.unwrap());
+    assert!(service.delete_media(STANDALONE_ID).await.unwrap());
     service.close().await.unwrap();
     drop(service);
 
@@ -231,7 +252,7 @@ async fn migrate_legacy_ids_images_aliases_and_reference_counts() {
     .unwrap();
     assert_eq!("1", service.list_media(1, 100).await.unwrap().total);
     let mut content = service
-        .open_content(temporary_resource_id, ContentRequest::default(), false)
+        .open_content(TEMPORARY_RESOURCE_ID, ContentRequest::default(), false)
         .await
         .unwrap();
     let mut bytes = Vec::new();
@@ -264,78 +285,115 @@ async fn migrate_legacy_ids_images_aliases_and_reference_counts() {
     service.close().await.unwrap();
 }
 
-#[tokio::test]
-async fn migrate_ready_version_two_without_rebuilding_media() {
-    let directory = TempDir::new().unwrap();
-    let service = DatalithService::new(
-        Datalith::new(directory.path()).await.unwrap(),
-        ServiceConfig::default(),
+async fn assert_current_schema(directory: &Path) {
+    let pool = SqlitePool::connect_with(
+        SqliteConnectOptions::new().filename(directory.join(PATH_DB_FILE)).read_only(true),
     )
     .await
     .unwrap();
-    let task = service.submit_upload(STANDALONE, Default::default(), None).await.unwrap();
-    let media: datalith_core::Media = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let task = service.get_task(task.id).await.unwrap().unwrap();
-            if task.status.is_terminal() {
-                assert_eq!(datalith_core::TaskStatus::Succeeded, task.status);
-                break serde_json::from_value(task.result.unwrap()).unwrap();
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+    let version: String =
+        sqlx::query_scalar("SELECT value FROM sys_db_information WHERE key='version'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!("2", version);
+    let legacy_tables: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN \
+         ('resources','images','image_thumbnails')",
+    )
+    .fetch_one(&pool)
     .await
     .unwrap();
-    service.close().await.unwrap();
-    drop(service);
+    assert_eq!(0, legacy_tables);
+    let markers: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM sys_db_information WHERE key='media_migration'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(0, markers);
+    let violations = sqlx::query("PRAGMA foreign_key_check").fetch_all(&pool).await.unwrap();
+    assert!(violations.is_empty());
+    pool.close().await;
+}
+
+async fn assert_content(
+    service: &DatalithService,
+    id: Uuid,
+    request: ContentRequest,
+    expected: &[u8],
+) {
+    let mut content = service.open_content(id, request, true).await.unwrap();
+    let mut bytes = Vec::new();
+    content.file.read_to_end(&mut bytes).await.unwrap();
+    assert_eq!(expected, bytes);
+    assert_eq!(hex::encode(Sha256::digest(expected)), content.metadata.sha256);
+    assert_eq!(expected.len().to_string(), content.metadata.file_size);
+}
+
+async fn assert_migrated_content(service: &DatalithService) {
+    for id in [RESOURCE_ID, ALIAS_ID, TEMPORARY_RESOURCE_ID] {
+        assert_content(service, id, ContentRequest::default(), PNG).await;
+    }
+    assert_content(service, STANDALONE_ID, ContentRequest::default(), STANDALONE).await;
+    let standalone = service.get_media(STANDALONE_ID).await.unwrap().unwrap();
+    assert_eq!(STANDALONE_ID, standalone.original.unwrap().id);
+    assert_eq!("legacy-file", standalone.file_name);
+    assert_content(
+        service,
+        IMAGE_ID,
+        ContentRequest {
+            variant: Some("original".into()),
+            ..ContentRequest::default()
+        },
+        PNG,
+    )
+    .await;
+    let image = service.get_media(IMAGE_ID).await.unwrap().unwrap();
+    for variant in image.variants {
+        let expected = if variant.file.id == WEBP_ID { WEBP } else { PNG };
+        assert_content(
+            service,
+            IMAGE_ID,
+            ContentRequest {
+                variant:    Some(variant.name),
+                multiplier: Some(variant.multiplier),
+                format:     Some(variant.format),
+            },
+            expected,
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn failed_migration_restores_legacy_tables_and_retries_without_replacing_backup() {
+    let directory = TempDir::new().unwrap();
+    legacy_store(directory.path()).await;
+    let file_directory = directory.path().join(PATH_FILE_DIRECTORY);
+    let mut originals = std::collections::BTreeMap::new();
+    let mut entries = fs::read_dir(&file_directory).await.unwrap();
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        originals.insert(entry.file_name(), fs::read(entry.path()).await.unwrap());
+    }
     let pool = SqlitePool::connect_with(
         SqliteConnectOptions::new().filename(directory.path().join(PATH_DB_FILE)),
     )
     .await
     .unwrap();
+    // Fail only after the legacy tables have been dropped.
     sqlx::raw_sql(
-        "DROP TABLE mp4_artifacts; DROP TABLE playback_sessions; DROP TABLE media_hls; UPDATE \
-         sys_db_information SET value='2' WHERE key IN ('version','media_migration')",
+        "CREATE TRIGGER fail_migration BEFORE UPDATE OF value ON sys_db_information WHEN \
+         NEW.key='version' AND NEW.value='2' AND NOT EXISTS (SELECT 1 FROM sqlite_master WHERE \
+         name IN ('resources','images','image_thumbnails')) BEGIN SELECT RAISE(ABORT, 'migration \
+         failed after DROP'); END",
     )
     .execute(&pool)
     .await
     .unwrap();
     pool.close().await;
+    let error = Datalith::new(directory.path()).await.unwrap_err();
+    assert!(error.to_string().contains("migration failed after DROP"));
 
-    let service = DatalithService::new(
-        Datalith::new(directory.path()).await.unwrap(),
-        ServiceConfig::default(),
-    )
-    .await
-    .unwrap();
-    let migrated = service.get_media(media.id).await.unwrap().unwrap();
-    assert_eq!(media.original, migrated.original);
-    assert_eq!(media.created_at, migrated.created_at);
-    assert_eq!("1", service.list_media(1, 100).await.unwrap().total);
-    let backup_path = directory.path().join(format!("{PATH_DB_FILE}.v2.bak"));
-    let backup = SqlitePool::connect_with(
-        SqliteConnectOptions::new().filename(&backup_path).read_only(true),
-    )
-    .await
-    .unwrap();
-    let version: String =
-        sqlx::query_scalar("SELECT value FROM sys_db_information WHERE key='version'")
-            .fetch_one(&backup)
-            .await
-            .unwrap();
-    assert_eq!("2", version);
-    let tables: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name='media_hls'")
-            .fetch_one(&backup)
-            .await
-            .unwrap();
-    assert_eq!(0, tables);
-    backup.close().await;
-    let before = fs::read(&backup_path).await.unwrap();
-    service.close().await.unwrap();
-    drop(service);
-
-    let datalith = Datalith::new(directory.path()).await.unwrap();
     let pool = SqlitePool::connect_with(
         SqliteConnectOptions::new().filename(directory.path().join(PATH_DB_FILE)),
     )
@@ -346,16 +404,46 @@ async fn migrate_ready_version_two_without_rebuilding_media() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!("3", version);
-    let ready: String =
-        sqlx::query_scalar("SELECT value FROM sys_db_information WHERE key='media_migration'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!("3", ready);
-    let violations = sqlx::query("PRAGMA foreign_key_check").fetch_all(&pool).await.unwrap();
-    assert!(violations.is_empty());
+    assert_eq!("1", version);
+    let counts: (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM resources), (SELECT COUNT(*) FROM images), (SELECT COUNT(*) \
+         FROM image_thumbnails), (SELECT count FROM files WHERE id=?)",
+    )
+    .bind(ORIGINAL_ID)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((2, 1, 2, 8), counts);
+    let media_tables: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN \
+         ('media','media_files','blob_files','tasks')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(0, media_tables);
+    for (name, expected) in &originals {
+        assert_eq!(*expected, fs::read(file_directory.join(name)).await.unwrap());
+    }
+    let backup_path = directory.path().join(format!("{PATH_DB_FILE}.v1.bak"));
+    let backup_bytes = fs::read(&backup_path).await.unwrap();
+    assert!(!backup_bytes.is_empty());
+    sqlx::query("DROP TRIGGER fail_migration").execute(&pool).await.unwrap();
     pool.close().await;
-    assert_eq!(before, fs::read(backup_path).await.unwrap());
-    datalith.close().await;
+
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert_current_schema(directory.path()).await;
+    assert_migrated_content(&service).await;
+    assert_eq!(backup_bytes, fs::read(backup_path).await.unwrap());
+    assert!(
+        !fs::try_exists(directory.path().join(format!("{PATH_DB_FILE}.v1.bak.pending")))
+            .await
+            .unwrap()
+    );
+    service.close().await.unwrap();
 }

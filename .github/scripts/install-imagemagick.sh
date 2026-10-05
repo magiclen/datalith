@@ -9,7 +9,7 @@ build_dir=$(mktemp -d)
 trap 'rm -rf "$build_dir"' EXIT
 
 sudo apt-get update
-sudo apt-get install -y --no-install-recommends build-essential curl pkg-config clang libmagic-dev libjpeg-dev libpng-dev libwebp-dev librsvg2-dev libtiff-dev zlib1g-dev ffmpeg
+sudo apt-get install -y --no-install-recommends build-essential curl pkg-config clang libmagic-dev libjpeg-dev libpng-dev libwebp-dev librsvg2-dev libtiff-dev zlib1g-dev
 curl --fail --location --retry 3 "https://github.com/ImageMagick/ImageMagick/archive/refs/tags/${version}.tar.gz" -o "$build_dir/imagemagick.tar.gz"
 printf '%s  %s\n' "$checksum" "$build_dir/imagemagick.tar.gz" | sha256sum --check -
 tar xzf "$build_dir/imagemagick.tar.gz" -C "$build_dir"

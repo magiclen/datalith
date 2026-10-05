@@ -310,6 +310,157 @@ async fn compliant_aac_trust_reuses_the_file_without_retaining_an_original() {
     content.file.read_to_end(&mut bytes).await.unwrap();
     drop(content);
     assert_eq!(source_bytes, bytes);
+    let encoded = upload(&service, &source, UploadOptions {
+        kind: MediaKind::Audio,
+        ..UploadOptions::default()
+    })
+    .await;
+    let encoded = &encoded.audio.as_ref().unwrap().variants[0];
+    assert_eq!(ProcessingMethod::Transcoded, encoded.processing_method);
+    assert_eq!(48_000, encoded.sample_rate);
+    assert_ne!(hex::encode(Sha256::digest(&source_bytes)), encoded.file.as_ref().unwrap().sha256);
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn audio_trust_remuxes_unapproved_containers_without_reencoding() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = service(&directory.path().join("store")).await;
+    let cases: [(&str, &[&str]); 4] = [
+        ("tail.m4a", &[]),
+        ("quicktime.mov", &["-f", "mov", "-movflags", "+faststart"]),
+        ("mobile.3gp", &["-f", "3gp", "-movflags", "+faststart"]),
+        ("fragmented.m4a", &["-movflags", "+frag_keyframe+empty_moov"]),
+    ];
+    for (name, container) in cases {
+        let source = directory.path().join(name);
+        let mut arguments = vec![
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=sample_rate=48000:duration=1",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "96k",
+        ];
+        arguments.extend_from_slice(container);
+        fixture(&source, &arguments).await;
+        let media = upload(&service, &source, UploadOptions {
+            kind: MediaKind::Audio,
+            audio: AudioOptions {
+                processing_mode: ProcessingMode::Trust,
+                ..AudioOptions::default()
+            },
+            ..UploadOptions::default()
+        })
+        .await;
+        let variant = &media.audio.as_ref().unwrap().variants[0];
+        assert_eq!(ProcessingMethod::Remuxed, variant.processing_method, "{name}");
+        assert_eq!("audio/mp4", variant.file.as_ref().unwrap().file_type);
+        let mut content =
+            service.open_content(media.id, ContentRequest::default(), false).await.unwrap();
+        let mut bytes = Vec::new();
+        content.file.read_to_end(&mut bytes).await.unwrap();
+        drop(content);
+        assert_ne!(fs::read(&source).await.unwrap(), bytes, "{name}");
+        let output = directory.path().join(format!("{name}.m4a"));
+        fs::write(&output, bytes).await.unwrap();
+        assert_eq!(
+            packet_hashes(&source, "a:0").await,
+            packet_hashes(&output, "a:0").await,
+            "{name}"
+        );
+    }
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn lossless_aac_profile_is_independent_of_preservation_and_keeps_legacy_recipes() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("silence.flac");
+    fixture(&source, &[
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=r=48000:cl=mono",
+        "-t",
+        "2",
+        "-c:a",
+        "flac",
+        "-compression_level",
+        "12",
+        "-frame_size",
+        "65535",
+    ])
+    .await;
+    let store = directory.path().join("store");
+    let service = service(&store).await;
+    for preserve_lossless in [false, true] {
+        let media = upload(&service, &source, UploadOptions {
+            kind: MediaKind::Audio,
+            audio: AudioOptions {
+                processing_mode: ProcessingMode::Trust,
+                preserve_lossless,
+                ..AudioOptions::default()
+            },
+            ..UploadOptions::default()
+        })
+        .await;
+        let variants = &media.audio.as_ref().unwrap().variants;
+        assert_eq!(1 + usize::from(preserve_lossless), variants.len());
+        assert_eq!("aac_high", variants.iter().find(|audio| audio.codec == "aac").unwrap().id);
+        if preserve_lossless {
+            let flac = variants.iter().find(|audio| audio.codec == "flac").unwrap();
+            assert_eq!(ProcessingMethod::Copied, flac.processing_method);
+            assert_eq!(
+                hex::encode(Sha256::digest(fs::read(&source).await.unwrap())),
+                flac.file.as_ref().unwrap().sha256
+            );
+        }
+    }
+    let task = service
+        .submit_upload(
+            fs::File::open(&source).await.unwrap(),
+            UploadOptions {
+                kind: MediaKind::Audio,
+                audio: AudioOptions {
+                    audio_stream: Some(99),
+                    ..AudioOptions::default()
+                },
+                ..UploadOptions::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(TaskStatus::Failed, finished(&service, task.id).await.status);
+    let pool = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new().filename(store.join(datalith_core::PATH_DB_FILE)),
+    )
+    .await
+    .unwrap();
+    let saved: String = sqlx::query_scalar("SELECT work FROM tasks WHERE id=?")
+        .bind(task.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let mut saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(2, saved["Upload"]["recipe"]["version"]);
+    saved["Upload"]["recipe"]["version"] = 1.into();
+    saved["Upload"]["options"]["audio"]["audio_stream"] = serde_json::Value::Null;
+    sqlx::query("UPDATE tasks SET work=? WHERE id=?")
+        .bind(saved.to_string())
+        .bind(task.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    service.retry_task(task.id).await.unwrap();
+    let task = finished(&service, task.id).await;
+    assert_eq!(TaskStatus::Succeeded, task.status, "{:?}", task.error);
+    let media: Media = serde_json::from_value(task.result.unwrap()).unwrap();
+    assert_eq!("aac_low", media.audio.as_ref().unwrap().variants[0].id);
+    pool.close().await;
     service.close().await.unwrap();
 }
 
@@ -686,6 +837,219 @@ async fn video_trust_preserves_compliant_h264_and_mixed_rates_share_a_time_origi
         .await
         .unwrap();
     assert_eq!(packet_hashes(&source, "v:0").await, packet_hashes(&output, "v:0").await);
+    pool.close().await;
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn video_trust_reencodes_packets_above_the_declared_h264_level() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("understated-level.mp4");
+    fixture(&source, &[
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=256x144:rate=20:duration=6",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-profile:v",
+        "high",
+        "-level:v",
+        "1.1",
+        "-refs",
+        "4",
+        "-b:v",
+        "300k",
+        "-maxrate",
+        "300k",
+        "-bufsize",
+        "600k",
+        "-flags",
+        "+cgop",
+        "-x264-params",
+        "nal-hrd=cbr:force-cfr=1:open-gop=0:scenecut=0",
+        "-forced-idr",
+        "1",
+        "-force_key_frames",
+        "expr:gte(t,n_forced*2)",
+        "-movflags",
+        "+faststart",
+    ])
+    .await;
+    let probe = Command::new(ffprobe())
+        .args(["-v", "error", "-show_entries", "stream=profile,level,bit_rate", "-of", "json"])
+        .arg(&source)
+        .output()
+        .await
+        .unwrap();
+    assert!(probe.status.success(), "{}", String::from_utf8_lossy(&probe.stderr));
+    let probe: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+    let stream = &probe["streams"][0];
+    assert_eq!("High", stream["profile"]);
+    assert_eq!(11, stream["level"]);
+    let bitrate = stream["bit_rate"].as_str().unwrap().parse::<u64>().unwrap();
+    assert!(bitrate > 240_000 && bitrate <= 350_000, "{bitrate}");
+    let service = service(&directory.path().join("store")).await;
+    let media = upload(&service, &source, UploadOptions {
+        kind: MediaKind::Video,
+        video: VideoOptions {
+            processing_mode: ProcessingMode::Trust,
+            variants: vec![VideoVariantSpec {
+                resolution: 144, fps: 20
+            }],
+            ..VideoOptions::default()
+        },
+        ..UploadOptions::default()
+    })
+    .await;
+    let variant = &media.video.as_ref().unwrap().variants[0];
+    assert_eq!(ProcessingMethod::Transcoded, variant.processing_method);
+    assert_eq!("avc1.64000c", variant.codec);
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn full_resolution_hls_and_mp4_exports_select_and_preserve_each_audio_profile() {
+    use datalith_core::{HlsAudioFilter, Mp4ExportOptions};
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source.mkv");
+    fixture(&source, &[
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=navy:size=1920x1080:rate=10:duration=0.8",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=sample_rate=48000:duration=0.8",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-c:a",
+        "flac",
+        "-sample_fmt",
+        "s16",
+        "-compression_level",
+        "12",
+    ])
+    .await;
+    let store = directory.path().join("store");
+    let service = service(&store).await;
+    let media = upload(&service, &source, UploadOptions {
+        kind: MediaKind::Video,
+        video: VideoOptions {
+            preserve_lossless: true,
+            variants: [480, 720, 1080]
+                .into_iter()
+                .map(|resolution| VideoVariantSpec {
+                    resolution,
+                    fps: 10,
+                })
+                .collect(),
+            ..VideoOptions::default()
+        },
+        ..UploadOptions::default()
+    })
+    .await;
+    let video = media.video.as_ref().unwrap();
+    assert_eq!(3, video.variants.len());
+    assert_eq!(3, video.audio.len());
+    let expected: [(u16, u32, u32, &[&str]); 3] = [
+        (480, 854, 480, &["aac_low"]),
+        (720, 1280, 720, &["aac_high", "aac_low"]),
+        (1080, 1920, 1080, &["flac", "aac_high", "aac_low"]),
+    ];
+    for (variant, (resolution, width, height, audio)) in video.variants.iter().zip(expected) {
+        assert_eq!(
+            (resolution, width, height),
+            (variant.resolution, variant.width, variant.height)
+        );
+        assert_eq!(audio, variant.audio.iter().map(String::as_str).collect::<Vec<_>>());
+    }
+    let default_master = service.hls_master(media.id, HlsAudioFilter::Aac, None).await.unwrap();
+    assert!(!default_master.body.contains("fLaC"));
+    let all = service.hls_master(media.id, HlsAudioFilter::All, None).await.unwrap();
+    assert_eq!(1, all.body.matches("AUDIO=\"flac\"").count());
+    assert_eq!(2, all.body.matches("AUDIO=\"aac_high\"").count());
+    assert_eq!(3, all.body.matches("AUDIO=\"aac_low\"").count());
+    let pool = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new().filename(store.join(datalith_core::PATH_DB_FILE)),
+    )
+    .await
+    .unwrap();
+    let inventory: String = sqlx::query_scalar("SELECT inventory FROM media_hls WHERE media_id=?")
+        .bind(media.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let inventory: serde_json::Value = serde_json::from_str(&inventory).unwrap();
+    let tracks = inventory["tracks"].as_array().unwrap();
+    assert_eq!(6, tracks.len());
+    for track in tracks {
+        let id = track["id"].as_str().unwrap();
+        let playlist = service.hls_track(media.id, id, None).await.unwrap();
+        assert!(playlist.body.contains("#EXT-X-MAP:"));
+        assert!(playlist.body.contains("#EXT-X-ENDLIST"));
+        fs::write(
+            directory.path().join(format!("{id}.mp4")),
+            stored_track(&pool, &store, track).await,
+        )
+        .await
+        .unwrap();
+    }
+    for (variant, expected_audio) in video.variants.iter().zip(["aac_low", "aac_high", "flac"]) {
+        let task = service
+            .submit_mp4_export(
+                media.id,
+                Mp4ExportOptions {
+                    variant: variant.id.clone()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let task = finished(&service, task.id).await;
+        assert_eq!(TaskStatus::Succeeded, task.status, "{:?}", task.error);
+        assert_eq!(expected_audio, task.result.as_ref().unwrap()["audio"]);
+        let mut artifact = service.open_artifact(task.id).await.unwrap();
+        let mut bytes = Vec::new();
+        artifact.file.read_to_end(&mut bytes).await.unwrap();
+        drop(artifact);
+        let output = directory.path().join(format!("export-{}.mp4", variant.id));
+        fs::write(&output, bytes).await.unwrap();
+        assert_eq!(
+            packet_hashes(&directory.path().join(format!("{}.mp4", variant.id)), "v:0").await,
+            packet_hashes(&output, "v:0").await,
+        );
+        assert_eq!(
+            packet_hashes(&directory.path().join(format!("{expected_audio}.mp4")), "a:0").await,
+            packet_hashes(&output, "a:0").await,
+        );
+        let decoded = Command::new(ffmpeg())
+            .args(["-v", "error", "-i"])
+            .arg(&output)
+            .args(["-f", "null", "-"])
+            .output()
+            .await
+            .unwrap();
+        assert!(decoded.status.success(), "{}", String::from_utf8_lossy(&decoded.stderr));
+    }
+    let pcm = |path: std::path::PathBuf| async move {
+        let output = Command::new(ffmpeg())
+            .args(["-v", "error", "-i"])
+            .arg(path)
+            .args(["-map", "0:a:0", "-f", "s16le", "pipe:1"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        output.stdout
+    };
+    assert_eq!(pcm(source).await, pcm(directory.path().join("export-1080p10.mp4")).await);
     pool.close().await;
     service.close().await.unwrap();
 }

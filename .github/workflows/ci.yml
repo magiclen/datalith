@@ -72,7 +72,7 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
       - run: cargo test --locked --workspace ${{ matrix.features }}
-      - run: cargo doc --locked --workspace ${{ matrix.features }}
+      - run: cargo doc --locked --workspace --no-deps ${{ matrix.features }}
 
   MSRV:
     strategy:

@@ -11,7 +11,7 @@ use std::{
 };
 
 use executor::{ffmpeg_options, input_options, push};
-use probe::{PacketStats, Probe, Stream};
+use probe::{BitrateLimit, PacketStats, Probe, Stream, VideoLimit};
 use tokio::fs;
 use uuid::Uuid;
 
@@ -76,10 +76,11 @@ struct VideoTiming {
     leading_hold: f64,
 }
 struct AudioPolicy {
-    mode:         ProcessingMode,
-    lossless:     bool,
-    hls:          bool,
-    high_allowed: bool,
+    mode:            ProcessingMode,
+    lossless:        bool,
+    hls:             bool,
+    high_allowed:    bool,
+    compare_payload: bool,
 }
 impl Pipeline<'_> {
     async fn run(
@@ -217,6 +218,7 @@ impl Pipeline<'_> {
             lossless,
             hls,
             high_allowed,
+            compare_payload,
         } = policy;
         let rate = source.number("sample_rate") as u32;
         let duration = if source.number("duration") > 0.0 {
@@ -231,9 +233,35 @@ impl Pipeline<'_> {
             && rate == 48_000
             && (1..=2).contains(&(source.number("channels") as u16))
             && bitrate <= 256_000;
+        let standalone_copy = !hls
+            && mode == ProcessingMode::Trust
+            && probe.streams.len() == 1
+            && source.number("start_time").abs() < 0.00001;
+        let direct_aac = if standalone_copy
+            && compliant
+            && self.source_format.split(',').any(|name| name == "mov")
+        {
+            let input = self.input.to_owned();
+            tokio::task::spawn_blocking(move || mp4::direct_audio_container(&input))
+                .await
+                .map_err(|error| ServiceError::Internal(error.to_string()))??
+        } else {
+            false
+        };
+        let input = self.input.to_owned();
+        let copied = |id: &str, codec: &str| EncodedAudio {
+            id:      id.into(),
+            path:    input.clone(),
+            codec:   codec.into(),
+            method:  ProcessingMethod::Copied,
+            stream:  source.clone(),
+            packets: stats.clone(),
+        };
         let mut audio = Vec::new();
         let mut warnings = Vec::new();
-        let high = if hls && !high_allowed {
+        let high = if direct_aac {
+            copied(if bitrate <= 128_000 { "aac_low" } else { "aac_high" }, "aac")
+        } else if hls && !high_allowed {
             self.audio_file(source, "aac", 128_000, compliant && bitrate <= 128_000, duration)
                 .await?
         } else if compliant {
@@ -248,8 +276,8 @@ impl Pipeline<'_> {
         } else {
             self.audio_file(source, "aac", 256_000, false, duration).await?
         };
-        let high_accepted =
-            high.id == "aac_high" && high.packets.payload_bytes <= stats.payload_bytes;
+        let high_accepted = high.id == "aac_high"
+            && (!compare_payload || high.packets.payload_bytes <= stats.payload_bytes);
         if hls {
             if high_accepted || high.id == "aac_low" {
                 audio.push(high);
@@ -279,8 +307,13 @@ impl Pipeline<'_> {
                 && (self.service.0.av.flac_available
                     || mode == ProcessingMode::Trust && source.text("codec_name") == "flac")
             {
-                match self
-                    .audio_file(
+                let flac = if standalone_copy
+                    && source.text("codec_name") == "flac"
+                    && self.source_format == "flac"
+                {
+                    Ok(copied("flac", "flac"))
+                } else {
+                    self.audio_file(
                         source,
                         "flac",
                         0,
@@ -288,7 +321,8 @@ impl Pipeline<'_> {
                         duration,
                     )
                     .await
-                {
+                };
+                match flac {
                     Ok(flac) => audio.insert(0, flac),
                     Err(ServiceError::Invalid(message)) => warnings.push(ProcessingWarning {
                         code:    "lossless_not_preserved".into(),
@@ -310,23 +344,6 @@ impl Pipeline<'_> {
                           not be verified."
                     .into(),
             });
-        }
-        if !hls
-            && mode == ProcessingMode::Trust
-            && probe.streams.len() == 1
-            && source.number("start_time").abs() < 0.00001
-        {
-            for output in &mut audio {
-                let format = probe.format["format_name"].as_str().unwrap_or("");
-                let direct = output.method == ProcessingMethod::Remuxed
-                    && (output.codec == "flac" && format == "flac"
-                        || output.codec == "aac" && format.split(',').any(|name| name == "mov"));
-                if direct {
-                    fs::remove_file(&output.path).await?;
-                    output.path = self.input.into();
-                    output.method = ProcessingMethod::Copied;
-                }
-            }
         }
         Ok((audio, warnings))
     }
@@ -375,8 +392,7 @@ impl Pipeline<'_> {
         let rate = audio.stream.number("sample_rate") as u32;
         let codec = if audio.codec == "aac" { "mp4a.40.2" } else { "fLaC" };
         let mut track =
-            inventory_track(self.service, &directory, &audio.id, rate, codec, false, prepared)
-                .await?;
+            inventory_track(&directory, &audio.id, rate, codec, false, prepared).await?;
         track.presentation_start =
             ((epoch + offset + audio.packets.start(rate)) * f64::from(rate)).round() as i64;
         track.presentation_end = (presentation_end * f64::from(rate)).round() as i64;
@@ -507,9 +523,7 @@ impl Pipeline<'_> {
                 "encoded video exceeds its H.264 decoding limits".into(),
             ));
         }
-        let track =
-            inventory_track(self.service, &directory, &id, 120_000, &info.codec, true, prepared)
-                .await?;
+        let track = inventory_track(&directory, &id, 120_000, &info.codec, true, prepared).await?;
         let summary = VideoVariant {
             id:                   id.clone(),
             resolution:           rendition.resolution,
@@ -591,7 +605,7 @@ pub(super) async fn process(
     recipe: &ProcessingRecipe,
     cancel: &AtomicBool,
 ) -> Result<Processed, ServiceError> {
-    if recipe.version != 1 {
+    if !matches!(recipe.version, 1 | 2) {
         return Err(ServiceError::Unsupported("unsupported processing recipe version".into()));
     }
     if !service.0.av.available {
@@ -672,13 +686,14 @@ pub(super) async fn process(
     let mut encoded_audio = if let Some((audio, stats)) = source_audio.zip(audio_stats.as_ref()) {
         let (audio, reported) = pipeline
             .audio_versions(&probe, audio, stats, AudioPolicy {
-                mode:         audio_options.0,
-                lossless:     audio_options.1
+                mode:            audio_options.0,
+                lossless:        audio_options.1
                     && (options.kind == MediaKind::Audio
                         || renditions.iter().any(|rendition| rendition.resolution >= 1080)),
-                hls:          options.kind == MediaKind::Video,
-                high_allowed: options.kind == MediaKind::Audio
+                hls:             options.kind == MediaKind::Video,
+                high_allowed:    options.kind == MediaKind::Audio
                     || renditions.iter().any(|rendition| rendition.resolution >= 720),
+                compare_payload: recipe.version == 1 || !audio.lossless(&service.0.av),
             })
             .await?;
         warnings = reported;
@@ -686,7 +701,7 @@ pub(super) async fn process(
     } else {
         Vec::new()
     };
-    let original_mime = crate::functions::detect_file_type_by_path(input, false)
+    let original_mime = crate::functions::detect_file_type_by_path(input)
         .await
         .map(|mime| mime.to_string())
         .unwrap_or_else(|| original_mime(&probe, options.kind));
@@ -751,20 +766,31 @@ pub(super) async fn process(
             && probe.format["format_name"]
                 .as_str()
                 .is_some_and(|format| format.split(',').any(|name| name == "mov"))
-            && video::can_copy(stream, rendition)
+            && let Some(source_limit) = video::copy_limit(stream, rendition)
         {
             let verified = probe::packets(
                 service,
                 input,
                 stream,
                 cancel,
-                Some((rendition.maxrate, rendition.frame_duration(), origin)),
+                Some(VideoLimit {
+                    limits: [
+                        BitrateLimit {
+                            bitrate: rendition.maxrate,
+                            buffer:  rendition.maxrate.saturating_mul(2),
+                        },
+                        source_limit,
+                    ],
+                    frame: rendition.frame_duration(),
+                    origin,
+                }),
             )
             .await?;
             verified.regular
                 && verified.envelope
                 && verified.aligned_keys
                 && verified.bitrate(1) <= rendition.maxrate
+                && verified.bitrate(1) <= source_limit.bitrate
         } else {
             false
         };
@@ -854,7 +880,6 @@ fn hls_options(args: &mut Vec<OsString>, directory: &Path, video: bool) {
 }
 
 async fn inventory_track(
-    service: &DatalithService,
     directory: &Path,
     id: &str,
     timescale: u32,
@@ -922,7 +947,6 @@ async fn inventory_track(
     let presentation_end =
         segments.iter().map(|segment| segment.start + segment.duration as i64).max().unwrap();
     let average = (bytes as f64 * 8.0 * f64::from(timescale) / duration as f64).ceil() as u64;
-    let _ = service;
     Ok(HlsTrack {
         id: id.into(),
         initialization,

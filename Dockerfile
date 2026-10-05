@@ -45,6 +45,18 @@ WORKDIR /build
 COPY . .
 RUN cargo build --locked --release -p datalith
 
+# Run the tests with the same media tools and image policy as the media image.
+# The source is mounted at /workspace, and the cargo cache and build output stay in /cargo and /target.
+FROM native AS test
+COPY datalith-core/src/service/image_policy.xml /opt/imagemagick/etc/ImageMagick-7/policy.xml
+RUN useradd --uid 1000 --create-home tester \
+    && mkdir -p /cargo /target /workspace && chown tester:tester /cargo /target /workspace
+ENV CARGO_HOME=/cargo
+ENV CARGO_TARGET_DIR=/target
+USER tester
+WORKDIR /workspace
+CMD ["cargo", "test", "--locked", "--workspace"]
+
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends libmagic1 ca-certificates \
     && rm -rf /var/lib/apt/lists/* \

@@ -1,6 +1,7 @@
 # Datalith Core
 
 Datalith Core is the Rust library behind the Datalith service.
+It supports Linux.
 It keeps files on disk, metadata in SQLite, and conversion work in stored background tasks.
 Identical stored contents share one copy, and one process owns each data folder.
 
@@ -48,6 +49,7 @@ service.close().await?;
 ```
 
 The input can be any `AsyncRead + Unpin`, including a Tokio file.
+`submit_upload_file` and `submit_import_file` take a file path and link the file instead of copying it when the file system allows it, so keep that file unchanged afterwards.
 An optional idempotency key avoids duplicate tasks when the same request is sent again.
 Tasks recover after restart, and failed or cancelled tasks can be retried while their input is kept.
 
@@ -121,21 +123,25 @@ Check `capabilities()` before offering conversions that depend on installed tool
 | `magic` | Detect MIME types with libmagic. |
 | `image-convert` | Process images with ImageMagick and render SVG with resvg. |
 | `av-convert` | Process audio/video with external FFmpeg and ffprobe. |
-| `manager` | Provide the older direct API's cleanup scheduler. |
 | `openapi` | Add utoipa schemas to request and response types. The HTTP service enables this. |
 
-The first four features are enabled by default.
-The task service has its own cleanup and does not need `manager`.
+The first three features are enabled by default.
+The task service handles cleanup itself.
 Disable default features for ordinary file storage without native media libraries.
-Rust edition 2024 and Rust 1.94 or later are required.
+Linux, Rust edition 2024, and Rust 1.94 or later are required.
 See the [native build guide](../datalith/README.md#api-and-native-builds) and [media tools](../FFMPEG.md).
 
 ## Existing applications
 
-The older `DatalithFile`, `DatalithResource`, `DatalithImage`, and direct methods on `Datalith` remain available.
-Use `DatalithService` consistently for new applications and avoid mixing its writes with direct storage writes.
-Supported older databases are upgraded at startup, preserving IDs and existing outputs.
-Back up the whole data folder before upgrading.
+Use `DatalithService` for uploads, reads, processing, and cleanup.
+The old direct file, resource, and image APIs and the `manager` feature have been removed.
+Startup upgrades the original version 1 database to version 2, preserving IDs and stored outputs.
+It first saves `datalith.sqlite.v1.bak`, then moves the old data and removes the old resource and image tables.
+Development database formats between these versions are not supported.
+Back up the whole data folder before upgrading; the database backup alone is not enough.
+
+New JSON reprocessing requests require `ProcessOptions.kind` to select `image`, `audio`, or `video`.
+Rust callers can use `ProcessOptions::default()` for images; serialization includes that kind.
 
 Adding the conversion switches means a Rust `UploadOptions` literal that lists every field must add them.
 Literals using `..UploadOptions::default()` continue to work.

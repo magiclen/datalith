@@ -1,5 +1,4 @@
--- This file runs on every start, so it must only contain idempotent statements.
--- A change such as `ALTER TABLE` needs a new migration step instead.
+-- Media, task, and playback tables for version 2.
 CREATE TABLE IF NOT EXISTS blob_files (
     file_id BLOB PRIMARY KEY NOT NULL,
     hash BLOB NOT NULL,
@@ -42,3 +41,24 @@ CREATE TABLE IF NOT EXISTS archive_imports (
     digest TEXT NOT NULL,
     result TEXT NOT NULL
 );
+
+-- The HLS inventory is separate from the public media summary.
+CREATE TABLE IF NOT EXISTS media_hls (
+    media_id BLOB PRIMARY KEY NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    inventory TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS playback_sessions (
+    media_id BLOB PRIMARY KEY NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    token TEXT NOT NULL,
+    token_hash TEXT UNIQUE NOT NULL,
+    expires_at INTEGER NOT NULL,
+    idempotency_key TEXT UNIQUE
+);
+CREATE INDEX IF NOT EXISTS playback_sessions_expiry ON playback_sessions(expires_at);
+CREATE TABLE IF NOT EXISTS mp4_artifacts (
+    task_id BLOB PRIMARY KEY NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    media_id BLOB NOT NULL,
+    session_hash TEXT,
+    expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS mp4_artifacts_expiry ON mp4_artifacts(expires_at);

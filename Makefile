@@ -1,7 +1,7 @@
 EXECUTABLE_NAME := datalith
 PREFIX ?= /usr/local
 
-.PHONY: all install test check fmt clean
+.PHONY: all install test docker-test check fmt clean
 
 all:
 	cargo build --locked --release -p $(EXECUTABLE_NAME)
@@ -11,6 +11,9 @@ install: all
 
 test:
 	cargo test --locked --workspace
+
+docker-test:
+	docker compose -f docker-compose.test.yml run --build --rm test
 
 check:
 	cargo +nightly fmt --all -- --check

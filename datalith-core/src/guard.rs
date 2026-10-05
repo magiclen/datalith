@@ -1,8 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fs,
-    path::PathBuf,
-};
+use std::collections::{HashMap, HashSet};
 
 use uuid::Uuid;
 
@@ -12,37 +8,6 @@ use crate::Datalith;
 pub(crate) struct FileLifecycle {
     pub(crate) opening:  HashMap<Uuid, usize>,
     pub(crate) deleting: HashSet<Uuid>,
-}
-
-#[derive(Debug)]
-pub(crate) struct PutGuard {
-    _datalith: Datalith,
-    hash:      [u8; 32],
-}
-
-impl Drop for PutGuard {
-    fn drop(&mut self) {
-        self._datalith.0._uploading_files.lock().unwrap().remove(&self.hash);
-        self._datalith.0._file_changed.notify_waiters();
-    }
-}
-
-impl PutGuard {
-    pub async fn new(datalith: Datalith, hash: [u8; 32]) -> Self {
-        loop {
-            let changed = datalith.0._file_changed.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            if datalith.0._uploading_files.lock().unwrap().insert(hash) {
-                break;
-            }
-            changed.await;
-        }
-        Self {
-            _datalith: datalith,
-            hash,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -103,8 +68,8 @@ impl OpenGuard {
 
 #[derive(Debug)]
 pub(crate) struct DeleteGuard {
-    _datalith:     Datalith,
-    pub(crate) id: Uuid,
+    _datalith: Datalith,
+    id:        Uuid,
 }
 
 impl Drop for DeleteGuard {
@@ -148,69 +113,5 @@ impl DeleteGuard {
             _datalith: datalith,
             id,
         }
-    }
-
-    #[cfg(feature = "image-convert")]
-    pub async fn acquire_multiple(guards: &mut Vec<Self>, datalith: Datalith, ids: &HashSet<Uuid>) {
-        loop {
-            let changed = datalith.0._file_changed.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            if Self::acquire_multiple_immediately(guards, datalith.clone(), ids).await {
-                break;
-            }
-            changed.await;
-        }
-    }
-
-    #[cfg(feature = "image-convert")]
-    pub async fn acquire_multiple_immediately(
-        guards: &mut Vec<Self>,
-        datalith: Datalith,
-        ids: &HashSet<Uuid>,
-    ) -> bool {
-        let mut lifecycle = datalith.0._file_lifecycle.lock().unwrap();
-        if ids.iter().any(|id| lifecycle.deleting.contains(id)) {
-            return false;
-        }
-        for id in ids {
-            lifecycle.deleting.insert(*id);
-            guards.push(Self {
-                _datalith: datalith.clone(), id: *id
-            });
-        }
-        true
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct TemporaryFileGuard {
-    moved:     bool,
-    file_path: PathBuf,
-}
-
-impl Drop for TemporaryFileGuard {
-    #[inline]
-    fn drop(&mut self) {
-        if !self.moved {
-            let _ = fs::remove_file(self.file_path.as_path());
-        }
-    }
-}
-
-impl TemporaryFileGuard {
-    #[inline]
-    pub fn new(file_path: impl Into<PathBuf>) -> Self {
-        let file_path = file_path.into();
-
-        Self {
-            moved: false,
-            file_path,
-        }
-    }
-
-    #[inline]
-    pub fn set_moved(&mut self) {
-        self.moved = true;
     }
 }

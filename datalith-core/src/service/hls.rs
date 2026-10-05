@@ -188,7 +188,6 @@ impl DatalithService {
             repeatable: true,
             temporary: media.single_use || media.expires_at.is_some(),
             _file_guard: Some(guard),
-            _artifact_guard: None,
         })
     }
 }

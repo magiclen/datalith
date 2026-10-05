@@ -11,6 +11,120 @@ pub(super) struct Timing {
     pub end:   i64,
 }
 
+pub(super) fn direct_audio_container(path: &Path) -> Result<bool, ServiceError> {
+    let mut file = File::open(path)?;
+    let end = file.metadata()?.len();
+    let mut offset = 0;
+    let mut brand = false;
+    let mut movie = false;
+    let mut media = false;
+    let mut count = 0;
+    while offset < end {
+        count += 1;
+        if count > 4096 {
+            return Ok(false);
+        }
+        let Some((name, start, next)) = box_header(&mut file, offset, end)? else {
+            return Ok(false);
+        };
+        match &name {
+            b"ftyp" => {
+                if brand || movie || media || !(8..=4096).contains(&(next - start)) {
+                    return Ok(false);
+                }
+                let mut data = vec![0; (next - start) as usize];
+                file.read_exact(&mut data)?;
+                let (compatible, remainder) = data[8..].as_chunks::<4>();
+                if !audio_brand(&data[..4])
+                    || !remainder.is_empty()
+                    || !compatible.iter().all(|brand| audio_brand(brand))
+                {
+                    return Ok(false);
+                }
+                brand = true;
+            },
+            b"moov" => {
+                if !brand || movie || media {
+                    return Ok(false);
+                }
+                let mut child = start;
+                while child < next {
+                    count += 1;
+                    if count > 4096 {
+                        return Ok(false);
+                    }
+                    let Some((name, _, after)) = box_header(&mut file, child, next)? else {
+                        return Ok(false);
+                    };
+                    if &name == b"mvex" {
+                        return Ok(false);
+                    }
+                    child = after;
+                }
+                movie = true;
+            },
+            b"mdat" => {
+                if !movie {
+                    return Ok(false);
+                }
+                media |= next > start;
+            },
+            b"moof" => return Ok(false),
+            _ => (),
+        }
+        offset = next;
+    }
+    Ok(brand && movie && media)
+}
+
+fn audio_brand(brand: &[u8]) -> bool {
+    matches!(
+        brand,
+        b"M4A "
+            | b"M4B "
+            | b"mp41"
+            | b"mp42"
+            | b"isom"
+            | b"iso2"
+            | b"iso3"
+            | b"iso4"
+            | b"iso5"
+            | b"iso6"
+    )
+}
+
+fn box_header(
+    file: &mut File,
+    offset: u64,
+    end: u64,
+) -> Result<Option<([u8; 4], u64, u64)>, ServiceError> {
+    if end - offset < 8 {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(offset))?;
+    let mut header = [0; 8];
+    file.read_exact(&mut header)?;
+    let mut size = u64::from(u32::from_be_bytes(header[..4].try_into().unwrap()));
+    let header_size = if size == 1 {
+        let mut extended = [0; 8];
+        if end - offset < 16 {
+            return Ok(None);
+        }
+        file.read_exact(&mut extended)?;
+        size = u64::from_be_bytes(extended);
+        16
+    } else {
+        8
+    };
+    if size == 0 {
+        size = end - offset;
+    }
+    if size < header_size || size > end - offset {
+        return Ok(None);
+    }
+    Ok(Some((header[4..].try_into().unwrap(), offset + header_size, offset + size)))
+}
+
 // Move the generated single-track edit offset into fragment decode times.
 // HLS readers can then share one clock without relying on movie edit lists.
 pub(super) fn normalize_timeline(directory: &Path) -> Result<(), ServiceError> {
