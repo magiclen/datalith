@@ -1057,10 +1057,12 @@ impl DatalithService {
                 media.frame_count = image.frame_count;
                 mime = image.original_mime;
                 // Each variant file gets its own extension, so drop the one from the original name.
+                // `Path::extension` ignores a trailing `/` or `/.`, so only strip it when the name really ends with it.
                 let stem = std::path::Path::new(&name)
                     .extension()
                     .and_then(|extension| extension.to_str())
-                    .map_or(name.as_str(), |extension| &name[..name.len() - extension.len() - 1]);
+                    .and_then(|extension| name.strip_suffix(extension)?.strip_suffix('.'))
+                    .unwrap_or(&name);
                 for variant in image.variants {
                     let file = Self::prepare_file(
                         variant.path,

@@ -150,6 +150,21 @@ async fn upload_download_ranges_and_conditional_requests() {
 }
 
 #[rocket::async_test]
+async fn download_names_follow_rfc_8187() {
+    let (client, service, _directory) = client().await;
+    upload(&client, json!({"file_name": "photo (1).jpg"})).await;
+    let id = media_id(&client).await;
+    let response = client.get(format!("/api/v1/media/{id}/content")).dispatch().await;
+    assert_eq!(Status::Ok, response.status());
+    assert_eq!(
+        Some("inline; filename*=UTF-8''photo%20%281%29.jpg"),
+        response.headers().get_one("Content-Disposition")
+    );
+    drop(response);
+    service.close().await.unwrap();
+}
+
+#[rocket::async_test]
 async fn docs_serve_the_generated_api_and_embedded_swagger_ui() {
     let (client, service, _directory) = client().await;
     let response = client.get("/api/v1/docs").dispatch().await;

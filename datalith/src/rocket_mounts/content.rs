@@ -15,8 +15,24 @@ use rocket::{
     response::{self, Responder},
 };
 use tokio::io::{AsyncRead, AsyncSeek, AsyncSeekExt, ReadBuf};
+use url_escape::percent_encoding::AsciiSet;
 
 use super::ApiError;
+
+// RFC 8187 allows only these characters to stay unescaped in `filename*`.
+const FILENAME_ATTR_CHARS: &AsciiSet = &url_escape::NON_ALPHANUMERIC
+    .remove(b'!')
+    .remove(b'#')
+    .remove(b'$')
+    .remove(b'&')
+    .remove(b'+')
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'^')
+    .remove(b'_')
+    .remove(b'`')
+    .remove(b'|')
+    .remove(b'~');
 
 pub(super) struct DownloadHeaders {
     range:         Option<String>,
@@ -181,7 +197,11 @@ async fn response(
     );
     let mut disposition =
         format!("{}; filename*=UTF-8''", if download { "attachment" } else { "inline" });
-    url_escape::encode_component_to_string(&content.metadata.file_name, &mut disposition);
+    url_escape::encode_to_string(
+        &content.metadata.file_name,
+        FILENAME_ATTR_CHARS,
+        &mut disposition,
+    );
     response.raw_header("Content-Disposition", disposition);
     response.raw_header(
         "Last-Modified",

@@ -1,23 +1,10 @@
 use super::{
-    super::{Rational, ServiceError, VideoOptions},
+    super::{
+        Rational, ServiceError, VideoOptions,
+        hls::{VIDEO_FRAME_RATES, VIDEO_RESOLUTIONS},
+    },
     probe::{BitrateLimit, Stream},
 };
-
-pub(super) const RESOLUTIONS: [(u16, u32, u32); 12] = [
-    (144, 256, 144),
-    (240, 426, 240),
-    (360, 640, 360),
-    (432, 768, 432),
-    (480, 854, 480),
-    (540, 960, 540),
-    (576, 1024, 576),
-    (720, 1280, 720),
-    (900, 1600, 900),
-    (1080, 1920, 1080),
-    (1440, 2560, 1440),
-    (2160, 3840, 2160),
-];
-pub(super) const FRAME_RATES: [u8; 10] = [10, 12, 15, 20, 24, 25, 30, 48, 50, 60];
 
 #[derive(Clone)]
 pub(super) struct Rendition {
@@ -201,7 +188,7 @@ pub(super) fn renditions(
         .rate()
         .ok_or_else(|| ServiceError::Invalid("the source has no usable frame rate".into()))?;
     let rate = f64::from(source_rate.numerator) / f64::from(source_rate.denominator);
-    let source_fps = FRAME_RATES
+    let source_fps = VIDEO_FRAME_RATES
         .iter()
         .copied()
         .rfind(|fps| {
@@ -213,13 +200,13 @@ pub(super) fn renditions(
     let maximum_resolution = source_width.min(source_height);
     let mut outputs = Vec::<Rendition>::new();
     for requested in &options.variants {
-        let (resolution, width, height) = RESOLUTIONS
+        let (resolution, width, height) = VIDEO_RESOLUTIONS
             .iter()
             .copied()
             .rfind(|(tier, ..)| {
                 *tier <= requested.resolution && u32::from(*tier) <= maximum_resolution
             })
-            .unwrap_or(RESOLUTIONS[0]);
+            .unwrap_or(VIDEO_RESOLUTIONS[0]);
         let fps = requested.fps.min(source_fps);
         if outputs.iter().any(|output| output.resolution == resolution && output.fps == fps) {
             continue;

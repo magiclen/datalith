@@ -11,7 +11,6 @@ use datalith_core::{
     Datalith, DatalithService, ExportOptions, PATH_TEMPORARY_FILE_DIRECTORY, ServiceConfig, Task,
     TaskStatus, Uuid,
 };
-use tokio::fs::{File, OpenOptions};
 
 async fn wait_task(service: &DatalithService, id: Uuid) -> anyhow::Result<Task> {
     loop {
@@ -40,18 +39,22 @@ async fn export(service: &DatalithService, output: &Path, ids: Vec<Uuid>) -> any
     };
     let submitted = service.submit_export(options, None).await?;
     let task = wait_task(service, submitted.id).await?;
-    let mut content = service.open_artifact(task.id).await?;
-    let mut destination = OpenOptions::new().write(true).create_new(true).open(output).await?;
-    let result = async {
-        tokio::io::copy(&mut content.file, &mut destination).await?;
-        destination.sync_all().await
-    }
-    .await;
-    drop(destination);
-    if let Err(error) = result {
-        let _ = tokio::fs::remove_file(output).await;
-        return Err(error.into());
-    }
+    let content = service.open_artifact(task.id).await?;
+    let mut source = content.file.into_std().await;
+    let output = output.to_owned();
+    // `std::io::copy` can copy between two files inside the kernel, and it avoids one blocking round trip for every small chunk.
+    tokio::task::spawn_blocking(move || {
+        let mut destination =
+            std::fs::OpenOptions::new().write(true).create_new(true).open(&output)?;
+        let result =
+            std::io::copy(&mut source, &mut destination).and_then(|_| destination.sync_all());
+        drop(destination);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&output);
+        }
+        result
+    })
+    .await??;
     println!("{}", serde_json::to_string(&task)?);
     Ok(())
 }
@@ -111,8 +114,7 @@ fn main() -> anyhow::Result<()> {
                 file,
             } => {
                 async {
-                    let reader = File::open(file).await?;
-                    let submitted = service.submit_import(reader, None).await?;
+                    let submitted = service.submit_import_file(&file, None).await?;
                     let task = wait_task(&service, submitted.id).await?;
                     println!("{}", serde_json::to_string(&task)?);
                     Ok(())

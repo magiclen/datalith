@@ -9,6 +9,24 @@ use super::{
 };
 use crate::guard::OpenGuard;
 
+/// The video resolution tiers with their horizontal canvas width and height.
+pub(super) const VIDEO_RESOLUTIONS: [(u16, u32, u32); 12] = [
+    (144, 256, 144),
+    (240, 426, 240),
+    (360, 640, 360),
+    (432, 768, 432),
+    (480, 854, 480),
+    (540, 960, 540),
+    (576, 1024, 576),
+    (720, 1280, 720),
+    (900, 1600, 900),
+    (1080, 1920, 1080),
+    (1440, 2560, 1440),
+    (2160, 3840, 2160),
+];
+/// The video frame-rate tiers.
+pub(super) const VIDEO_FRAME_RATES: [u8; 10] = [10, 12, 15, 20, 24, 25, 30, 48, 50, 60];
+
 impl DatalithService {
     pub(super) async fn hls_inventory(&self, id: Uuid) -> Result<HlsInventory, ServiceError> {
         let value: String = sqlx::query_scalar("SELECT inventory FROM media_hls WHERE media_id=?")
@@ -353,25 +371,11 @@ pub(super) fn validate_video(
     for output in &media.audio {
         validate_audio(output, false)?;
     }
-    let canvases = [
-        (144, 256, 144),
-        (240, 426, 240),
-        (360, 640, 360),
-        (432, 768, 432),
-        (480, 854, 480),
-        (540, 960, 540),
-        (576, 1024, 576),
-        (720, 1280, 720),
-        (900, 1600, 900),
-        (1080, 1920, 1080),
-        (1440, 2560, 1440),
-        (2160, 3840, 2160),
-    ];
     for variant in &media.variants {
         if !safe_id(&variant.id)
             || !h264_codec(&variant.codec)
-            || !canvases.contains(&(variant.resolution, variant.width, variant.height))
-            || ![10, 12, 15, 20, 24, 25, 30, 48, 50, 60].contains(&variant.fps)
+            || !VIDEO_RESOLUTIONS.contains(&(variant.resolution, variant.width, variant.height))
+            || !VIDEO_FRAME_RATES.contains(&variant.fps)
             || variant.frame_rate.numerator == 0
             || variant.frame_rate.denominator == 0
             || !variant.leading_hold_seconds.is_finite()

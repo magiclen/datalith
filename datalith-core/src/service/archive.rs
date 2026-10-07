@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs::File,
-    io::{self, Read, Write},
+    io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -23,6 +23,7 @@ use super::{
 use crate::{PATH_FILE_DIRECTORY, guard::OpenGuard};
 
 const MAX_MANIFEST_SIZE: u64 = 64 * 1024 * 1024;
+const COPY_BUFFER_SIZE: usize = 1024 * 1024;
 const QUERY_BATCH_SIZE: usize = 400;
 
 #[derive(Serialize, Deserialize)]
@@ -396,8 +397,11 @@ fn write_archive(
         return Err(archive_error("archive manifest exceeds 64 MiB; export smaller groups"));
     }
     let mut output = tempfile::NamedTempFile::new_in(directory)?;
+    // tar copies with an 8 KiB buffer, so buffer both files to avoid tiny system calls.
     let mut writer = HashingWriter {
-        inner: output.as_file_mut(), hash: Sha256::new(), size: 0
+        inner: BufWriter::with_capacity(COPY_BUFFER_SIZE, output.as_file_mut()),
+        hash:  Sha256::new(),
+        size:  0,
     };
     {
         let mut builder = tar::Builder::new(&mut writer);
@@ -408,10 +412,11 @@ fn write_archive(
             if source.metadata()?.len() != size {
                 return Err(archive_error("stored file size does not match metadata"));
             }
-            let mut source =
-                HashingReader {
-                    inner: source, hash: Sha256::new(), cancel: cancel.clone()
-                };
+            let mut source = HashingReader {
+                inner:  BufReader::with_capacity(COPY_BUFFER_SIZE, source),
+                hash:   Sha256::new(),
+                cancel: cancel.clone(),
+            };
             if let Err(error) =
                 append_header(&mut builder, &format!("blobs/{hash}"), size, &mut source)
             {
@@ -425,8 +430,10 @@ fn write_archive(
         builder.finish()?;
     }
     writer.flush()?;
-    let digest = hex::encode(writer.hash.finalize());
+    let digest = hex::encode(std::mem::take(&mut writer.hash).finalize());
     let size = writer.size;
+    // The writer borrows the output file, so drop it before syncing the file.
+    drop(writer);
     output.as_file().sync_all()?;
     check_cancelled(cancel)?;
     output.persist(directory.join("export.tar")).map_err(|error| error.error)?;
@@ -520,7 +527,10 @@ fn validate_archive_inner(
             if manifest.is_some() || seen.len() != 1 || size > MAX_MANIFEST_SIZE {
                 return Err(archive_error("invalid archive manifest"));
             }
-            let decoded: Manifest = serde_json::from_reader(&mut entry)
+            // `from_reader` reads one byte per call, and this reader has no buffer.
+            let mut data = Vec::with_capacity(size as usize);
+            entry.read_to_end(&mut data)?;
+            let decoded: Manifest = serde_json::from_slice(&data)
                 .map_err(|_| archive_error("invalid archive manifest JSON"))?;
             if !matches!(decoded.version, 1 | 2) {
                 return Err(ServiceError::Unsupported("unsupported archive version".into()));

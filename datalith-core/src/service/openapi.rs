@@ -1,14 +1,14 @@
 pub(super) fn video_resolution() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
     utoipa::openapi::schema::ObjectBuilder::new()
         .schema_type(utoipa::openapi::schema::Type::Integer)
-        .enum_values(Some([144, 240, 360, 432, 480, 540, 576, 720, 900, 1080, 1440, 2160]))
+        .enum_values(Some(super::hls::VIDEO_RESOLUTIONS.map(|(tier, ..)| tier)))
         .into()
 }
 
 pub(super) fn video_fps() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
     utoipa::openapi::schema::ObjectBuilder::new()
         .schema_type(utoipa::openapi::schema::Type::Integer)
-        .enum_values(Some([10, 12, 15, 20, 24, 25, 30, 48, 50, 60]))
+        .enum_values(Some(super::hls::VIDEO_FRAME_RATES))
         .into()
 }
 

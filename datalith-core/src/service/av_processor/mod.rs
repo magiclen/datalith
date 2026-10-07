@@ -19,6 +19,7 @@ use super::{
     AudioMedia, AudioVariant, DatalithService, HlsInventory, HlsSegment, HlsTrack, MediaKind,
     PreparedFile, ProcessingMethod, ProcessingMode, ProcessingRecipe, ProcessingWarning,
     ServiceError, UploadOptions, VideoMedia, VideoVariant,
+    hls::{VIDEO_FRAME_RATES, VIDEO_RESOLUTIONS},
 };
 
 pub(super) struct Processed {
@@ -584,8 +585,8 @@ pub(super) fn validate_options(options: &UploadOptions) -> Result<(), ServiceErr
             ));
         }
         for variant in &options.video.variants {
-            if !video::RESOLUTIONS.iter().any(|(tier, ..)| *tier == variant.resolution)
-                || !video::FRAME_RATES.contains(&variant.fps)
+            if !VIDEO_RESOLUTIONS.iter().any(|(tier, ..)| *tier == variant.resolution)
+                || !VIDEO_FRAME_RATES.contains(&variant.fps)
             {
                 return Err(ServiceError::Invalid(
                     "unsupported video resolution or frame-rate tier".into(),

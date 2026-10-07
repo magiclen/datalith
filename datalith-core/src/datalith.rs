@@ -98,7 +98,12 @@ impl Datalith {
                 .await
                 .map_err(io::Error::other)?;
         let storage_id = storage_id.map_or(id, |(id,)| id);
-        Ok(self.get_file_directory().await?.join(format!("{:x}", storage_id.as_u128())))
+        Ok(self.storage_path(storage_id))
+    }
+
+    // The file directory is created before any file is stored, so reads and removals do not need to check it.
+    fn storage_path(&self, storage_id: Uuid) -> PathBuf {
+        self.0.environment.join(PATH_FILE_DIRECTORY).join(format!("{:x}", storage_id.as_u128()))
     }
 
     #[inline]
@@ -416,8 +421,7 @@ impl Datalith {
         .await?
         .is_some();
         if !tracked {
-            let path = self.get_file_directory().await?.join(format!("{:x}", storage_id.as_u128()));
-            allow_not_found_error(fs::remove_file(path).await)?;
+            allow_not_found_error(fs::remove_file(self.storage_path(storage_id)).await)?;
         }
         sqlx::query(
             "DELETE FROM blob_files WHERE storage_id = ? AND NOT EXISTS (SELECT 1 FROM files \

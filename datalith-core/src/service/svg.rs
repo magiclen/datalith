@@ -193,8 +193,9 @@ pub(super) fn render(
     }
     let size = tree.size().to_int_size();
     check_dimensions(u64::from(size.width()), u64::from(size.height()), 1, limits)?;
-    let mut pixels = u64::from(size.width()) * u64::from(size.height());
-    check_images(tree.root(), limits, &mut pixels)?;
+    let canvas = u64::from(size.width()) * u64::from(size.height());
+    let mut pixels = canvas;
+    check_images(tree.root(), limits, canvas, &mut pixels)?;
     if cancel.load(Ordering::Acquire) {
         return Err(ServiceError::Cancelled);
     }
@@ -217,13 +218,20 @@ pub(super) fn render(
 fn check_images(
     group: &usvg::Group,
     limits: &ImageLimits,
+    canvas: u64,
     pixels: &mut u64,
 ) -> Result<(), ServiceError> {
     for node in group.children() {
         if let usvg::Node::Image(image) = node {
             let size = image.size().to_int_size();
             check_dimensions(u64::from(size.width()), u64::from(size.height()), 1, limits)?;
-            *pixels = pixels.saturating_add(u64::from(size.width()) * u64::from(size.height()));
+            // resvg draws each nested SVG on a new pixmap as large as the whole canvas.
+            let cost = if matches!(image.kind(), usvg::ImageKind::SVG(_)) {
+                canvas
+            } else {
+                u64::from(size.width()) * u64::from(size.height())
+            };
+            *pixels = pixels.saturating_add(cost);
             if *pixels > limits.max_total_pixels {
                 return Err(ServiceError::Invalid(
                     "SVG images exceed the total pixel limit.".into(),
@@ -231,12 +239,12 @@ fn check_images(
             }
         }
         if let usvg::Node::Group(group) = node {
-            check_images(group, limits, pixels)?;
+            check_images(group, limits, canvas, pixels)?;
         }
         let mut result = Ok(());
         node.subroots(|group| {
             if result.is_ok() {
-                result = check_images(group, limits, pixels);
+                result = check_images(group, limits, canvas, pixels);
             }
         });
         result?;

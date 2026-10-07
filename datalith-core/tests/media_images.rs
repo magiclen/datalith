@@ -279,6 +279,43 @@ async fn named_variants_respect_orientation_and_source_dimensions() {
 }
 
 #[tokio::test]
+async fn variant_file_names_drop_only_a_real_extension() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    for (file_name, expected) in
+        [("photo.png", "photo-default@1x.webp"), ("x.é/.", "x.é/.-default@1x.webp")]
+    {
+        let task = service
+            .submit_upload(
+                include_bytes!("data/image.png").as_slice(),
+                UploadOptions {
+                    kind: MediaKind::Image,
+                    file_name: Some(file_name.into()),
+                    ..UploadOptions::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let done = finished(&service, task.id).await;
+        assert_eq!(TaskStatus::Succeeded, done.status, "{:?}", done.error);
+        let media: Media = serde_json::from_value(done.result.unwrap()).unwrap();
+        let variant = media
+            .variants
+            .iter()
+            .find(|variant| variant.multiplier == 1 && variant.format == "webp")
+            .unwrap();
+        assert_eq!(expected, variant.file.file_name);
+    }
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn trust_reuses_matching_image_files_and_still_provides_webp() {
     use datalith_core::{ProcessingMethod, ProcessingMode};
     use image_convert::{JPGConfig, to_jpg};
