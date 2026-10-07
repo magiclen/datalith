@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    ffi::CString,
+    ffi::{CStr, CString},
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -112,6 +112,12 @@ pub(super) fn configure_resources() -> Result<(), ServiceError> {
     CONFIGURED
         .get_or_init(|| {
             image_convert::start_call_once();
+            // image-convert converts ICC profiles to sRGB with Little CMS and fails such images without it, even when the profile is a variant of sRGB.
+            // ImageMagick returns a static string, which lives for the whole process.
+            let delegates = unsafe { CStr::from_ptr(bindings::GetMagickDelegates()) };
+            if !delegates.to_string_lossy().split_whitespace().any(|delegate| delegate == "lcms") {
+                return Err("ImageMagick needs the lcms delegate to convert color profiles.".into());
+            }
             configure_policy()?;
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             for (kind, ceiling) in [
@@ -148,7 +154,7 @@ fn configure_policy() -> Result<(), String> {
     }
     for coder in [
         c"PS", c"EPS", c"PDF", c"PCL", c"XPS", c"MSL", c"TEXT", c"HTTP", c"HTTPS", c"SVG", c"SVGZ",
-        c"MSVG", c"RSVG",
+        c"MSVG", c"RSVG", c"DOT", c"GV", c"MVG",
     ] {
         // ImageMagick is initialized, and each name is a static C string.
         let allowed = unsafe {
@@ -237,12 +243,27 @@ fn apng_frame_count(path: &Path) -> Result<Option<u32>, ServiceError> {
     }
 }
 
+// ImageMagick has no signature for these formats, and it only checks the major brand of HEIF files, so they need an explicit format.
+fn explicit_format(
+    path: &Path,
+    detected_mime: Option<&str>,
+) -> Result<Option<&'static str>, ServiceError> {
+    let mut header = Vec::with_capacity(4096);
+    File::open(path)?.take(4096).read_to_end(&mut header)?;
+    Ok(super::classification::icon_format(&header)
+        .or_else(|| super::classification::heif_format(&header))
+        .or_else(|| (detected_mime == Some("image/x-tga")).then_some("TGA")))
+}
+
+/// Process an image file.
+/// `detected_mime` is the type that libmagic detected for `input`, if any.
 pub(crate) fn process_image(
     input: &Path,
     output_dir: &Path,
     options: &ImageOptions,
     limits: &ImageLimits,
     cancel: &AtomicBool,
+    detected_mime: Option<&str>,
 ) -> Result<ProcessedImage, ServiceError> {
     validate_options(options, limits)?;
     check_cancel(cancel)?;
@@ -250,16 +271,18 @@ pub(crate) fn process_image(
     configure_resources()?;
     let svg = super::svg::render(input, output_dir, limits, cancel)?;
     let source = svg.as_ref().map_or(input, |svg| svg.path.as_path());
-    let input = ImageResource::Path(
-        source
-            .to_str()
-            .ok_or_else(|| ServiceError::Invalid("The image path is not UTF-8.".into()))?
-            .to_owned(),
-    );
+    let path = source
+        .to_str()
+        .ok_or_else(|| ServiceError::Invalid("The image path is not UTF-8.".into()))?;
+    let format = if svg.is_some() { None } else { explicit_format(source, detected_mime)? };
+    let input = ImageResource::Path(match format {
+        Some(format) => format!("{format}:{path}"),
+        None => path.to_owned(),
+    });
     let ping = identify_ping(&input).map_err(image_error)?;
-    let preflight_frames = apng_frame_count(input.as_path().unwrap())?
-        .map(u64::from)
-        .unwrap_or(ping.number_of_frames as u64);
+    // The resource path can start with a format, so read the file itself.
+    let preflight_frames =
+        apng_frame_count(source)?.map(u64::from).unwrap_or(ping.number_of_frames as u64);
     check_dimensions(
         u64::from(ping.resolution.width),
         u64::from(ping.resolution.height),
@@ -276,6 +299,9 @@ pub(crate) fn process_image(
         && matches!(metadata.format.as_str(), "GIF" | "WEBP" | "PNG" | "APNG" | "MNG");
     let original_mime = if let Some(svg) = &svg {
         svg.mime.into()
+    } else if let Some(mime) = detected_mime.filter(|mime| *mime != "application/octet-stream") {
+        // libmagic knows the registered types, such as `image/vnd.adobe.photoshop` for PSD.
+        mime.into()
     } else {
         match ping.format.as_str() {
             "JPG" | "JPEG" => "image/jpeg".into(),

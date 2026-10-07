@@ -1,11 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Datalith accepts every image format of ImageMagick except the ones that run Ghostscript, which has a long history of sandbox escapes. -->
+<!-- Datalith accepts every image format of ImageMagick except the ones that run Ghostscript, which has a long history of sandbox escapes, or other programs, or that can read other files. -->
 <!-- SVG files use resvg with external images disabled; ImageMagick must not decode SVG or its delegates. -->
 <policymap>
   <policy domain="path" rights="none" pattern="@*"/>
   <policy domain="coder" rights="none" pattern="{AI,EPDF,EPI,EPS,EPS2,EPS3,EPSF,EPSI,EPT,EPT2,EPT3,PCL,PDF,PDFA,POCKETMOD,PS,PS2,PS3,XPS}"/>
   <policy domain="module" rights="none" pattern="{EPT,PCL,PDF,PS,PS2,PS3,XPS}"/>
-  <policy domain="delegate" rights="none" pattern="{gs,gxps,pcl6,svg:decode}"/>
+  <!-- These delegates run external programs for formats that ImageMagick detects from their contents. -->
+  <policy domain="delegate" rights="none" pattern="{gs,gxps,pcl6,svg:decode,cgm,dng:decode,dot,fig,hpg,hpgl,ilbm}"/>
   <policy domain="coder" rights="none" pattern="{EPHEMERAL,FTP,HTTP,HTTPS,MSL,TEXT,URL}"/>
   <policy domain="coder" rights="none" pattern="{SVG,SVGZ,MSVG,RSVG}"/>
+  <!-- Graphviz and MVG can draw other files into the output image. -->
+  <policy domain="coder" rights="none" pattern="{DOT,GV,MVG}"/>
 </policymap>

@@ -28,7 +28,7 @@ magic = { version = "0.16", optional = true }
 uuid = { version = "1", features = ["v4", "serde"] }
 rand = "0.10"
 
-image-convert = { version = "0.23", optional = true }
+image-convert = { version = "0.24", optional = true }
 resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"], optional = true }
 flate2 = { version = "1", optional = true }
 

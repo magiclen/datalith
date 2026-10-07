@@ -1112,6 +1112,9 @@ impl DatalithService {
                 let image_options = options.image.clone();
                 let limits = recipe.image_limits.clone();
                 let image_cancel = cancel.clone();
+                let detected_mime = crate::functions::detect_file_type_by_path(&input)
+                    .await
+                    .map(|mime| mime.essence_str().to_owned());
                 let image = tokio::task::spawn_blocking(move || {
                     super::image_processor::process_image(
                         &image_input,
@@ -1119,6 +1122,7 @@ impl DatalithService {
                         &image_options,
                         &limits,
                         &image_cancel,
+                        detected_mime.as_deref(),
                     )
                 })
                 .await

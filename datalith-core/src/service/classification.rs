@@ -59,34 +59,58 @@ fn image_header(header: &[u8]) -> bool {
         || header.starts_with(b"\x76\x2F\x31\x01")
         || header.starts_with(b"II\x2A\0")
         || header.starts_with(b"MM\0\x2A")
-        || header.starts_with(b"\0\0\x01\0")
-        || header.starts_with(b"\0\0\x02\0")
+        || icon_format(header).is_some()
         || header.starts_with(b"\xFF\x0A")
         || header.starts_with(b"\0\0\0\x0CJXL \r\n\x87\n")
         || header.starts_with(b"\0\0\0\x0CjP  \r\n\x87\n")
         || (header.starts_with(b"RIFF") && header.get(8..12) == Some(b"WEBP"))
-        || image_brands(header)
+        || heif_format(header).is_some()
 }
 
-fn image_brands(header: &[u8]) -> bool {
+// Return the ImageMagick format of an ICO or CUR file, using the rule of image-convert, which needs a nonzero image count.
+pub(super) fn icon_format(header: &[u8]) -> Option<&'static str> {
+    if header.get(4..6).is_none_or(|count| count == [0, 0]) {
+        return None;
+    }
+    match header[..4] {
+        [0, 0, 1, 0] => Some("ICO"),
+        [0, 0, 2, 0] => Some("CUR"),
+        _ => None,
+    }
+}
+
+// Return the ImageMagick format of an ISO base media file whose major or compatible brands mark it as an AVIF or HEIF image.
+pub(super) fn heif_format(header: &[u8]) -> Option<&'static str> {
     if header.get(4..8) != Some(b"ftyp") {
-        return false;
+        return None;
     }
     let size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
     if size < 16 {
-        return false;
+        return None;
     }
-    let brand = |brand: &[u8; 4]| {
+    let major: &[u8; 4] = header.get(8..12)?.try_into().unwrap();
+    let compatible =
+        header.get(16..size.min(header.len())).map_or(&[][..], |brands| brands.as_chunks::<4>().0);
+    let brands = || std::iter::once(major).chain(compatible);
+    if brands().any(|brand| matches!(brand, b"avif" | b"avis")) {
+        Some("AVIF")
+    } else if brands().any(|brand| {
         matches!(
             brand,
-            b"avif" | b"avis" | b"heic" | b"heix" | b"hevc" | b"hevx" | b"mif1" | b"msf1"
+            b"heic"
+                | b"heix"
+                | b"hevc"
+                | b"hevx"
+                | b"heim"
+                | b"heis"
+                | b"hevm"
+                | b"hevs"
+                | b"mif1"
+                | b"msf1"
         )
-    };
-    let Some(major) = header.get(8..12) else {
-        return false;
-    };
-    brand(major.try_into().unwrap())
-        || header
-            .get(16..size.min(header.len()))
-            .is_some_and(|brands| brands.as_chunks::<4>().0.iter().any(brand))
+    }) {
+        Some("HEIC")
+    } else {
+        None
+    }
 }

@@ -146,6 +146,7 @@ The source orientation is applied first, and smaller sources are not enlarged.
 Without size limits, the default keeps the source size and creates only 1x outputs.
 
 Every size has WebP, with PNG fallback for transparency or JPEG otherwise.
+Outputs are converted to sRGB when the source has a color profile, such as a Display P3 photo, and the profile is then removed.
 GIF, WebP, and APNG animations also have GIF and a still first-frame fallback.
 SVG and SVGZ are supported, but external image paths and URLs are rejected.
 SVG text needs fonts; the Docker image includes DejaVu, which also replaces generic families such as `sans-serif` when the named fonts are missing.
@@ -202,6 +203,7 @@ Leaving out `kind` returns `422` with error code `invalid_request`.
 Set `processing_mode: "trust"` inside the image, audio, or video options to reuse compliant files or streams.
 Datalith still checks each output and converts anything that does not meet its requirements.
 A matching MP4 is packaged into HLS, and an image still needs WebP.
+A reused image keeps its color profile, which color-managed browsers apply; converted outputs use sRGB.
 
 ## Get files and play media
 
@@ -274,7 +276,8 @@ Use error codes rather than message text when an application handles errors.
 
 Native builds need Linux, Rust 1.94 or later, libmagic development files, and ImageMagick 7.1.1 or later below 7.2.
 Image builds also need pkg-config and Clang.
-ImageMagick should have the `heic`, `jxl`, `jp2`, `openexr`, `raw`, and `djvu` delegates for those formats; uploads of a format without its delegate fail.
+ImageMagick must have the `lcms` delegate, because image outputs convert embedded color profiles, such as Display P3, to sRGB; the service does not start without it.
+ImageMagick should also have the `heic`, `jxl`, `jp2`, `openexr`, `raw`, and `djvu` delegates for those formats; uploads of a format without its delegate fail.
 Docker builds ImageMagick without librsvg and graphviz, because Datalith renders SVG itself and graphviz can read other files.
 LibRaw and DjVuLibre allocate memory outside the ImageMagick limits, so set a memory limit for the container when untrusted users can upload files.
 Audio/video processing needs external FFmpeg and ffprobe version 9 or later.

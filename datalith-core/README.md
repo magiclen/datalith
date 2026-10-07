@@ -123,7 +123,7 @@ Check `capabilities()` before offering conversions that depend on installed tool
 | Feature | Purpose |
 | --- | --- |
 | `magic` | Detect MIME types with libmagic. |
-| `image-convert` | Process images with ImageMagick and render SVG with resvg. |
+| `image-convert` | Process images with ImageMagick, which needs the `lcms` delegate to convert color profiles, and render SVG with resvg. |
 | `av-convert` | Process audio/video with external FFmpeg and ffprobe. |
 | `openapi` | Add utoipa schemas to request and response types. The HTTP service enables this. |
 

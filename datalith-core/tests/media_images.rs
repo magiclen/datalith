@@ -7,7 +7,9 @@ use datalith_core::{
     MediaKind, ServiceConfig, TaskStatus, UploadOptions, Variant,
 };
 use image_convert::{
-    ImageResource, InterlaceType, WEBPConfig, identify_ping, identify_read, to_webp,
+    Color, ImageResource, InterlaceType, WEBPConfig, identify_ping, identify_read,
+    magick_rust::{MagickWand, PixelWand},
+    to_webp,
 };
 use tokio::io::AsyncReadExt;
 
@@ -15,6 +17,11 @@ use tokio::io::AsyncReadExt;
 const GIF: &[u8] = include_bytes!("data/media-animation.gif");
 const APNG: &[u8] = include_bytes!("data/media-animation.png");
 const ORIENTED_JPEG: &[u8] = include_bytes!("data/media-orientation.jpg");
+// This profile comes from the image-convert 0.24.0 test suite and was made with Little CMS 2.
+const DISPLAY_P3: &[u8] = include_bytes!("data/display_p3.icc");
+// A color in Display P3, and the same color converted to sRGB, as image-convert checks them.
+const DISPLAY_P3_PIXEL: [u8; 3] = [180, 100, 50];
+const SRGB_PIXEL: [u8; 3] = [193, 95, 34];
 
 async fn finished(service: &DatalithService, id: datalith_core::Uuid) -> datalith_core::Task {
     tokio::time::timeout(Duration::from_secs(60), async {
@@ -231,6 +238,102 @@ async fn svg_text_uses_installed_fonts_for_generic_families() {
     service.close().await.unwrap();
 }
 
+// Create a 16x16 image in one color, tagged with the Display P3 profile without converting it.
+fn display_p3_image(format: &str) -> Vec<u8> {
+    let [r, g, b] = DISPLAY_P3_PIXEL;
+    let mut color = PixelWand::new();
+    color.set_color(Color::Rgba(r, g, b, 255).to_magick_color().as_ref()).unwrap();
+    let mut image = MagickWand::new();
+    image.new_image(16, 16, &color).unwrap();
+    image.set_image_depth(8).unwrap();
+    image.profile_image("icc", DISPLAY_P3).unwrap();
+    image.write_image_blob(format).unwrap()
+}
+
+// Return the first pixel of an encoded image, and whether the image still has an ICC profile.
+fn first_pixel(bytes: &[u8]) -> ([u8; 3], bool) {
+    let image = MagickWand::new();
+    image.read_image_blob(bytes).unwrap();
+    let pixel = image.export_image_pixels(0, 0, 1, 1, "RGB").unwrap().try_into().unwrap();
+    let profiled =
+        MagickWand::new_from_image(&image.get_image().unwrap()).unwrap().write_image_blob("ICC");
+    (pixel, profiled.is_ok())
+}
+
+fn assert_pixel(expected: [u8; 3], actual: [u8; 3], tolerance: u8) {
+    for (expected, actual) in expected.iter().zip(actual) {
+        assert!(expected.abs_diff(actual) <= tolerance, "Expected {expected:?}, got {actual:?}.");
+    }
+}
+
+async fn original_bytes(service: &DatalithService, media: &Media) -> Vec<u8> {
+    let mut content = service
+        .open_content(
+            media.id,
+            ContentRequest {
+                variant: Some("original".into()),
+                ..ContentRequest::default()
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    let mut bytes = Vec::new();
+    content.file.read_to_end(&mut bytes).await.unwrap();
+    bytes
+}
+
+#[tokio::test]
+async fn display_p3_colors_are_converted_to_srgb() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    let source = display_p3_image("PNG");
+    let media = upload(&service, &source, ImageOptions::default()).await;
+    for variant in &media.variants {
+        let (pixel, profiled) = first_pixel(&variant_bytes(&service, &media, variant).await);
+        // WebP is lossy, so its colors can move a little more.
+        assert_pixel(SRGB_PIXEL, pixel, if variant.format == "webp" { 8 } else { 2 });
+        assert!(!profiled, "{} keeps an ICC profile", variant.format);
+    }
+    assert_eq!(source, original_bytes(&service, &media).await);
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn trust_copies_a_display_p3_jpeg_and_converts_its_webp() {
+    use datalith_core::{ProcessingMethod, ProcessingMode};
+
+    let directory = tempfile::tempdir().unwrap();
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    let source = display_p3_image("JPEG");
+    let media = upload(&service, &source, ImageOptions {
+        processing_mode: ProcessingMode::Trust,
+        save_original: false,
+        ..ImageOptions::default()
+    })
+    .await;
+    // The copied file keeps its profile, so color-managed viewers still show the right colors.
+    let jpeg = media.variants.iter().find(|variant| variant.format == "jpeg").unwrap();
+    assert_eq!(ProcessingMethod::Copied, jpeg.processing_method);
+    assert_eq!(source, variant_bytes(&service, &media, jpeg).await);
+    let webp = media.variants.iter().find(|variant| variant.format == "webp").unwrap();
+    assert_eq!(ProcessingMethod::Transcoded, webp.processing_method);
+    let (pixel, profiled) = first_pixel(&variant_bytes(&service, &media, webp).await);
+    assert_pixel(SRGB_PIXEL, pixel, 8);
+    assert!(!profiled);
+    service.close().await.unwrap();
+}
+
 async fn variant_bytes(service: &DatalithService, media: &Media, variant: &Variant) -> Vec<u8> {
     let mut content = service
         .open_content(
@@ -311,12 +414,12 @@ async fn formats_from_image_delegates_become_images() {
     .await
     .unwrap();
     // These 16x16 fixtures need the heic, jxl, jp2, and openexr delegates of ImageMagick.
-    for (name, bytes) in [
-        ("image.heic", include_bytes!("data/image.heic").as_slice()),
-        ("image.avif", include_bytes!("data/image.avif").as_slice()),
-        ("image.jxl", include_bytes!("data/image.jxl").as_slice()),
-        ("image.jp2", include_bytes!("data/image.jp2").as_slice()),
-        ("image.exr", include_bytes!("data/image.exr").as_slice()),
+    for (name, bytes, file_type) in [
+        ("image.heic", include_bytes!("data/image.heic").as_slice(), "image/heic"),
+        ("image.avif", include_bytes!("data/image.avif").as_slice(), "image/avif"),
+        ("image.jp2", include_bytes!("data/image.jp2").as_slice(), "image/jp2"),
+        ("image.exr", include_bytes!("data/image.exr").as_slice(), "image/x-exr"),
+        ("image.jxl", include_bytes!("data/image.jxl").as_slice(), "image/jxl"),
     ] {
         let task = service
             .submit_upload(
@@ -334,8 +437,67 @@ async fn formats_from_image_delegates_become_images() {
         assert_eq!(TaskStatus::Succeeded, done.status, "{name}: {:?}", done.error);
         let media: Media = serde_json::from_value(done.result.unwrap()).unwrap();
         assert_eq!(MediaKind::Image, media.kind, "{name}");
+        assert_eq!(file_type, media.original.as_ref().unwrap().file_type, "{name}");
         let webp = media.variants.iter().find(|variant| variant.format == "webp").unwrap();
         assert_eq!((16, 16), (webp.width, webp.height), "{name}");
+    }
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn icons_and_targa_images_need_no_file_extension() {
+    use image_convert::{ICOConfig, to_ico};
+
+    let directory = tempfile::tempdir().unwrap();
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    let png = include_bytes!("data/image.png");
+    let mut ico = ImageResource::Data(Vec::new());
+    to_ico(&mut ico, &ImageResource::Data(png.to_vec()), &ICOConfig {
+        size: vec![(16, 16), (32, 32), (64, 64)],
+        ..ICOConfig::new()
+    })
+    .unwrap();
+    let ico = ico.as_u8_slice().unwrap().to_vec();
+    // A cursor file only differs from an icon file in its type field.
+    let mut cur = ico.clone();
+    cur[2] = 2;
+    let wand = MagickWand::new();
+    wand.read_image_blob(png).unwrap();
+    let tga = wand.write_image_blob("TGA").unwrap();
+    for (name, bytes, file_type, size) in [
+        ("icon.ico", ico, "image/vnd.microsoft.icon", 64),
+        ("cursor.cur", cur, "image/x-win-bitmap", 64),
+        ("image.tga", tga, "image/x-tga", 128),
+    ] {
+        let task = service
+            .submit_upload(
+                bytes.as_slice(),
+                UploadOptions {
+                    kind: MediaKind::Image,
+                    file_name: Some(name.into()),
+                    ..UploadOptions::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let done = finished(&service, task.id).await;
+        assert_eq!(TaskStatus::Succeeded, done.status, "{name}: {:?}", done.error);
+        let media: Media = serde_json::from_value(done.result.unwrap()).unwrap();
+        assert_eq!(file_type, media.original.unwrap().file_type, "{name}");
+        assert!(!media.animated, "{name}");
+        // Icons keep their largest image.
+        let webp = media
+            .variants
+            .iter()
+            .find(|variant| variant.format == "webp" && variant.multiplier == 1)
+            .unwrap();
+        assert_eq!((size, size), (webp.width, webp.height), "{name}");
     }
     service.close().await.unwrap();
 }
