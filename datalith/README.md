@@ -148,6 +148,10 @@ Without size limits, the default keeps the source size and creates only 1x outpu
 Every size has WebP, with PNG fallback for transparency or JPEG otherwise.
 GIF, WebP, and APNG animations also have GIF and a still first-frame fallback.
 SVG and SVGZ are supported, but external image paths and URLs are rejected.
+SVG text needs fonts; the Docker image includes DejaVu, which also replaces generic families such as `sans-serif` when the named fonts are missing.
+
+The Docker image reads common web formats and also HEIC/HEIF, AVIF, JPEG XL, JPEG 2000, OpenEXR, DjVu, camera RAW (CR2, CR3, CRW, MRW, ORF, RAF, and RW2), PSD, TIFF, and other formats that ImageMagick detects from their contents.
+PostScript, PDF, and other formats that run external programs or read other files are blocked.
 New JPEG outputs are progressive; PNG and GIF outputs are interlaced.
 
 ### Audio
@@ -270,6 +274,9 @@ Use error codes rather than message text when an application handles errors.
 
 Native builds need Linux, Rust 1.94 or later, libmagic development files, and ImageMagick 7.1.1 or later below 7.2.
 Image builds also need pkg-config and Clang.
+ImageMagick should have the `heic`, `jxl`, `jp2`, `openexr`, `raw`, and `djvu` delegates for those formats; uploads of a format without its delegate fail.
+Docker builds ImageMagick without librsvg and graphviz, because Datalith renders SVG itself and graphviz can read other files.
+LibRaw and DjVuLibre allocate memory outside the ImageMagick limits, so set a memory limit for the container when untrusted users can upload files.
 Audio/video processing needs external FFmpeg and ffprobe version 9 or later.
 Docker uses ImageMagick 7.1.2-32 with FFmpeg 9.0.2; older ImageMagick animation delegates may need an upgrade.
 Docker includes the tested tools; see [FFMPEG.md](../FFMPEG.md) for their build and source bundle.

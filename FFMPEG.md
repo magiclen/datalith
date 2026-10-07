@@ -14,6 +14,7 @@ The ImageMagick source version and checksum are in [Dockerfile](Dockerfile).
 The tools include x264 for H.264, native AAC, FLAC, and the formats needed for image animation and HLS.
 FFplay and FFmpeg network access are disabled.
 Docker keeps the ImageMagick settings and image policy needed by the service.
+ImageMagick uses Debian's libheif, libjxl, OpenJPEG, Little CMS, OpenEXR, LibRaw, and DjVuLibre packages to read more image formats.
 
 To install the same FFmpeg tools on Debian or Ubuntu:
 
@@ -35,6 +36,7 @@ Datalith's source license is MIT.
 The included FFmpeg and x264 programs use GPL version 2 or later.
 zimg uses WTFPL version 2, and libwebp uses a BSD license with a separate patent grant.
 License texts are in `/opt/ffmpeg/share/datalith-ffmpeg/licenses`; system package notices remain in the Debian image.
+The image libraries come from Debian with their notices in `/usr/share/doc`; DjVuLibre uses GPL version 2 or later, and HEIC decoding uses libde265, which may need HEVC patent licenses in some places.
 
 Every full image includes `/opt/ffmpeg/share/datalith-ffmpeg/ffmpeg-source.tar.xz`.
 It contains the exact source archives, checksums, installer, installer license, and build information for those tools.

@@ -208,6 +208,29 @@ async fn svg_keeps_embedded_images_and_blocks_external_images() {
     service.close().await.unwrap();
 }
 
+#[tokio::test]
+async fn svg_text_uses_installed_fonts_for_generic_families() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    for family in ["serif", "sans-serif", "monospace"] {
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="30"><rect width="80" height="30" fill="white"/><text x="4" y="22" font-family="{family}" font-size="20" fill="black">Hello</text></svg>"#
+        );
+        let media = upload(&service, svg.as_bytes(), ImageOptions::default()).await;
+        let png = media.variants.iter().find(|variant| variant.format == "png").unwrap();
+        let bytes = variant_bytes(&service, &media, png).await;
+        let pixels = resvg::tiny_skia::Pixmap::decode_png(&bytes).unwrap();
+        let dark = pixels.pixels().iter().filter(|pixel| pixel.red() < 128).count();
+        assert!(dark > 0, "{family} text was not rendered");
+    }
+    service.close().await.unwrap();
+}
+
 async fn variant_bytes(service: &DatalithService, media: &Media, variant: &Variant) -> Vec<u8> {
     let mut content = service
         .open_content(
@@ -274,6 +297,45 @@ async fn named_variants_respect_orientation_and_source_dimensions() {
         if variant.format == "jpeg" {
             assert_eq!(InterlaceType::JPEG, metadata.interlace);
         }
+    }
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn formats_from_image_delegates_become_images() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    // These 16x16 fixtures need the heic, jxl, jp2, and openexr delegates of ImageMagick.
+    for (name, bytes) in [
+        ("image.heic", include_bytes!("data/image.heic").as_slice()),
+        ("image.avif", include_bytes!("data/image.avif").as_slice()),
+        ("image.jxl", include_bytes!("data/image.jxl").as_slice()),
+        ("image.jp2", include_bytes!("data/image.jp2").as_slice()),
+        ("image.exr", include_bytes!("data/image.exr").as_slice()),
+    ] {
+        let task = service
+            .submit_upload(
+                bytes,
+                UploadOptions {
+                    enable_convert_to_image: true,
+                    file_name: Some(name.into()),
+                    ..UploadOptions::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let done = finished(&service, task.id).await;
+        assert_eq!(TaskStatus::Succeeded, done.status, "{name}: {:?}", done.error);
+        let media: Media = serde_json::from_value(done.result.unwrap()).unwrap();
+        assert_eq!(MediaKind::Image, media.kind, "{name}");
+        let webp = media.variants.iter().find(|variant| variant.format == "webp").unwrap();
+        assert_eq!((16, 16), (webp.width, webp.height), "{name}");
     }
     service.close().await.unwrap();
 }

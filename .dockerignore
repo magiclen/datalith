@@ -17,3 +17,4 @@
 !/.github/scripts/
 /.github/scripts/*
 !/.github/scripts/install-ffmpeg.sh
+!/.github/scripts/check-imagemagick.sh

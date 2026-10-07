@@ -176,6 +176,7 @@ pub(super) fn render(
         .get_or_init(|| {
             let mut fonts = usvg::fontdb::Database::new();
             fonts.load_system_fonts();
+            use_installed_generic_families(&mut fonts);
             Arc::new(fonts)
         })
         .clone();
@@ -213,6 +214,45 @@ pub(super) fn render(
         path,
         mime: if compressed { "application/gzip" } else { "image/svg+xml" },
     }))
+}
+
+// Generic families can name fonts which are not installed, and usvg drops text without a font, so point them at installed fonts.
+fn use_installed_generic_families(fonts: &mut usvg::fontdb::Database) {
+    use usvg::fontdb::{Database, Family, Query};
+
+    fn installed(fonts: &Database, family: Family) -> bool {
+        fonts
+            .query(&Query {
+                families: &[family],
+                ..Query::default()
+            })
+            .is_some()
+    }
+
+    let fallback =
+        fonts.faces().find_map(|face| face.families.first()).map(|(name, _)| name.clone());
+    for (generic, preferred) in [
+        (Family::Serif, "DejaVu Serif"),
+        (Family::SansSerif, "DejaVu Sans"),
+        (Family::Monospace, "DejaVu Sans Mono"),
+    ] {
+        if installed(fonts, generic) {
+            continue;
+        }
+        let name = if installed(fonts, Family::Name(preferred)) {
+            Some(preferred.to_owned())
+        } else {
+            fallback.clone()
+        };
+        let Some(name) = name else {
+            continue;
+        };
+        match generic {
+            Family::Serif => fonts.set_serif_family(name),
+            Family::SansSerif => fonts.set_sans_serif_family(name),
+            _ => fonts.set_monospace_family(name),
+        }
+    }
 }
 
 fn check_images(
