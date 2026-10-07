@@ -28,6 +28,8 @@ use super::{Variant, migration::content_path};
 
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30);
 const FULL_SCAN_INTERVAL: Duration = Duration::from_secs(60 * 60);
+// A task which is still running at this many starts in a row is failed instead of being run again.
+const MAX_CRASH_RECOVERIES: i64 = 3;
 
 pub(super) struct PendingDirectory {
     pub path:  PathBuf,
@@ -57,6 +59,7 @@ type StagedTask = (Uuid, PendingDirectory, StagedInput);
 impl DatalithService {
     /// Queue an upload; the returned task creates the media.
     /// A repeated request with the same idempotency key and content returns the first task.
+    /// It returns `Busy` if an export is waiting or taking its snapshot when it is called, but an export never blocks or discards an input that has been accepted.
     pub async fn submit_upload(
         &self,
         reader: impl AsyncRead + Unpin,
@@ -103,6 +106,7 @@ impl DatalithService {
     }
 
     /// Queue the import of a Datalith archive.
+    /// It returns `Busy` if an export is waiting or taking its snapshot when it is called, but an export never blocks or discards an input that has been accepted.
     pub async fn submit_import(
         &self,
         reader: impl AsyncRead + Unpin,
@@ -298,6 +302,8 @@ impl DatalithService {
         if self.0.shutdown.load(Ordering::Acquire) {
             return Err(ServiceError::Busy);
         }
+        // Fail fast while an export is pending, but do not hold the gate, because staging never touches stored content.
+        self.0.writes.try_read().map(drop).map_err(|_| ServiceError::Busy)?;
         let path = self.work_directory(id);
         fs::create_dir_all(
             path.parent().ok_or_else(|| ServiceError::Internal("invalid work directory".into()))?,
@@ -314,7 +320,6 @@ impl DatalithService {
         &self,
         mut reader: impl AsyncRead + Unpin,
     ) -> Result<StagedTask, ServiceError> {
-        let _gate = self.0.writes.try_read().map_err(|_| ServiceError::Busy)?;
         let id = Uuid::new_v4();
         let directory = self.pending_directory(id).await?;
         let mut file = fs::File::create(directory.path.join("input")).await?;
@@ -342,7 +347,6 @@ impl DatalithService {
         source: &Path,
         known: Option<(String, u64)>,
     ) -> Result<Option<StagedTask>, ServiceError> {
-        let _gate = self.0.writes.try_read().map_err(|_| ServiceError::Busy)?;
         // A hard link to a symbolic link does not follow it, so only link regular files.
         let metadata = match fs::symlink_metadata(source).await {
             Ok(metadata) if metadata.is_file() => metadata,
@@ -431,7 +435,7 @@ impl DatalithService {
         // Keep the input until SQLite saves the task, even if the HTTP request ends.
         tokio::spawn(async move {
             let mut directory = directory;
-            let _gate = service.0.writes.try_read().map_err(|_| ServiceError::Busy)?;
+            // The export snapshot holds `mutations`, so saving a task only waits for that short step.
             let _mutation = service.0.mutations.lock().await;
             let payload = serde_json::to_string(&work)?;
             let fingerprint = request_fingerprint(&work)?;
@@ -582,6 +586,10 @@ impl DatalithService {
         task.error = None;
         task.result = None;
         task.completed_units = 0;
+        sqlx::query("UPDATE tasks SET crash_count=0 WHERE id=?")
+            .bind(id)
+            .execute(&self.0.datalith.0.db)
+            .await?;
         self.save_task(&mut task).await?;
         self.0.wakeup.notify_one();
         Ok(task)
@@ -650,20 +658,47 @@ impl DatalithService {
     }
 
     pub(super) async fn recover_tasks(&self) -> Result<(), ServiceError> {
-        let rows =
-            sqlx::query("SELECT metadata FROM tasks WHERE status IN ('running','cancelling')")
-                .fetch_all(&self.0.datalith.0.db)
-                .await?;
+        let rows = sqlx::query(
+            "SELECT metadata, crash_count FROM tasks WHERE status IN ('running','cancelling')",
+        )
+        .fetch_all(&self.0.datalith.0.db)
+        .await?;
         for row in rows {
             let mut task: Task = serde_json::from_str(row.try_get("metadata")?)?;
-            task.status = if task.status == TaskStatus::Cancelling {
-                TaskStatus::Cancelled
+            let mut crash_count: i64 = row.try_get("crash_count")?;
+            if task.status == TaskStatus::Cancelling {
+                task.status = TaskStatus::Cancelled;
+                task.stage = "cancelled".into();
             } else {
-                TaskStatus::Queued
-            };
-            task.stage =
-                if task.status == TaskStatus::Queued { "recovered" } else { "cancelled" }.into();
-            self.save_task(&mut task).await?;
+                // A normal shutdown puts interrupted tasks back into the queue, so a running task means that the process stopped unexpectedly.
+                crash_count = crash_count.saturating_add(1);
+                if crash_count >= MAX_CRASH_RECOVERIES {
+                    task.status = TaskStatus::Failed;
+                    task.stage = status_name(task.status).into();
+                    task.error = Some(TaskError {
+                        code:    "repeated_interruption".into(),
+                        message: format!(
+                            "The service stopped unexpectedly {crash_count} times while running \
+                             this task, so it was not started again. Retry it after the cause is \
+                             fixed."
+                        ),
+                    });
+                } else {
+                    task.status = TaskStatus::Queued;
+                    task.stage = "recovered".into();
+                }
+            }
+            task.updated_at = Utc::now();
+            sqlx::query(
+                "UPDATE tasks SET status=?, updated_at=?, metadata=?, crash_count=? WHERE id=?",
+            )
+            .bind(status_name(task.status))
+            .bind(task.updated_at.timestamp_millis())
+            .bind(serde_json::to_string(&task)?)
+            .bind(crash_count)
+            .bind(task.id)
+            .execute(&self.0.datalith.0.db)
+            .await?;
         }
         let root = self.0.datalith.get_environment().join("datalith.tasks");
         fs::create_dir_all(&root).await?;
@@ -685,12 +720,23 @@ impl DatalithService {
         Ok(())
     }
 
-    async fn claim_task(&self) -> Result<Option<(Task, Work, Arc<AtomicBool>)>, ServiceError> {
+    // Claim the oldest queued task, or only the given one.
+    async fn claim_task(
+        &self,
+        only: Option<Uuid>,
+    ) -> Result<Option<(Task, Work, Arc<AtomicBool>)>, ServiceError> {
         let _mutation = self.0.mutations.lock().await;
+        // Shutdown puts interrupted tasks back into the queue, so they must not be claimed again here.
+        if self.0.shutdown.load(Ordering::Acquire) {
+            return Ok(None);
+        }
         let mut tx = self.0.datalith.0.db.begin_with("BEGIN IMMEDIATE").await?;
         let row = sqlx::query(
-            "SELECT metadata,work FROM tasks WHERE status='queued' ORDER BY created_at,id LIMIT 1",
+            "SELECT metadata,work FROM tasks WHERE status='queued' AND (? IS NULL OR id=?) ORDER \
+             BY created_at,id LIMIT 1",
         )
+        .bind(only)
+        .bind(only)
         .fetch_optional(&mut *tx)
         .await?;
         let Some(row) = row else {
@@ -752,76 +798,9 @@ impl DatalithService {
             let notified = wakeup.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            match service.claim_task().await {
+            match service.claim_task(None).await {
                 Ok(Some((task, work, cancel))) => {
-                    let id = task.id;
-                    let result = match work {
-                        Work::Upload {
-                            options,
-                            recipe,
-                            input,
-                        } => {
-                            service
-                                .run_upload(
-                                    id,
-                                    options,
-                                    recipe.unwrap(),
-                                    None,
-                                    input,
-                                    cancel.clone(),
-                                )
-                                .await
-                        },
-                        Work::Process {
-                            options,
-                            recipe,
-                            file_name,
-                            expires_at,
-                            input,
-                            ..
-                        } => {
-                            service
-                                .run_upload(
-                                    id,
-                                    UploadOptions {
-                                        kind: options.kind,
-                                        file_name: Some(file_name),
-                                        image: options.image,
-                                        audio: options.audio,
-                                        video: options.video,
-                                        ..UploadOptions::default()
-                                    },
-                                    recipe.unwrap(),
-                                    expires_at,
-                                    input,
-                                    cancel.clone(),
-                                )
-                                .await
-                        },
-                        Work::Export(options) => {
-                            service.export_archive(id, options, cancel.clone()).await
-                        },
-                        Work::Mp4Export(work) => {
-                            service.run_mp4_export(id, work, cancel.clone()).await
-                        },
-                        Work::Import {
-                            ..
-                        } => service.import_archive(id, cancel.clone()).await,
-                    };
-                    if !(service.0.shutdown.load(Ordering::Acquire)
-                        && result.is_err()
-                        && !cancel.load(Ordering::Acquire))
-                        && let Err(error) = service.finish_task(id, result).await
-                    {
-                        tracing::error!(task_id=%id, %error, "cannot record task outcome");
-                    }
-                    if let Err(error) = service.clean_task_files(id, false).await {
-                        tracing::warn!(task_id=%id, %error, "task staging cleanup failed");
-                    }
-                    let mut active = service.0.cancellations.lock().unwrap();
-                    if active.get(&id).is_some_and(|current| Arc::ptr_eq(current, &cancel)) {
-                        active.remove(&id);
-                    }
+                    service.run_claimed(task, work, cancel).await;
                     continue;
                 },
                 Ok(None) => (),
@@ -830,6 +809,97 @@ impl DatalithService {
             drop(service);
             tokio::select! { _ = notified => (), _ = tokio::time::sleep(Duration::from_secs(1)) => () }
         }
+    }
+
+    // Run a claimed task, record its outcome, and clean up its staging files.
+    async fn run_claimed(&self, task: Task, work: Work, cancel: Arc<AtomicBool>) {
+        let id = task.id;
+        let result = match work {
+            Work::Upload {
+                options,
+                recipe,
+                input,
+            } => self.run_upload(id, options, recipe.unwrap(), None, input, cancel.clone()).await,
+            Work::Process {
+                options,
+                recipe,
+                file_name,
+                expires_at,
+                input,
+                ..
+            } => {
+                self.run_upload(
+                    id,
+                    UploadOptions {
+                        kind: options.kind,
+                        file_name: Some(file_name),
+                        image: options.image,
+                        audio: options.audio,
+                        video: options.video,
+                        ..UploadOptions::default()
+                    },
+                    recipe.unwrap(),
+                    expires_at,
+                    input,
+                    cancel.clone(),
+                )
+                .await
+            },
+            Work::Export(options) => self.export_archive(id, options, cancel.clone()).await,
+            Work::Mp4Export(work) => self.run_mp4_export(id, work, cancel.clone()).await,
+            Work::Import {
+                ..
+            } => self.import_archive(id, cancel.clone()).await,
+        };
+        let outcome = if self.0.shutdown.load(Ordering::Acquire)
+            && result.is_err()
+            && !cancel.load(Ordering::Acquire)
+        {
+            self.requeue_interrupted(id).await
+        } else {
+            self.finish_task(id, result).await
+        };
+        if let Err(error) = outcome {
+            tracing::error!(task_id=%id, %error, "cannot record task outcome");
+        }
+        if let Err(error) = self.clean_task_files(id, false).await {
+            tracing::warn!(task_id=%id, %error, "task staging cleanup failed");
+        }
+        let mut active = self.0.cancellations.lock().unwrap();
+        if active.get(&id).is_some_and(|current| Arc::ptr_eq(current, &cancel)) {
+            active.remove(&id);
+        }
+    }
+
+    // Put a task stopped by shutdown back into the queue, so the next start does not count it as a crash.
+    async fn requeue_interrupted(&self, id: Uuid) -> Result<(), ServiceError> {
+        let _mutation = self.0.mutations.lock().await;
+        let Some(mut task) = self.get_task(id).await? else {
+            return Ok(());
+        };
+        if task.status != TaskStatus::Running {
+            return Ok(());
+        }
+        task.status = TaskStatus::Queued;
+        task.stage = "queued".into();
+        self.save_task(&mut task).await
+    }
+
+    /// Run one queued task in the current async task and return its final state.
+    /// Use it with `new_without_workers` to run a single task without processing the rest of the queue.
+    /// It returns `Conflict` when the task is not queued, for example when a worker has already claimed it.
+    pub async fn run_task(&self, id: Uuid) -> Result<Task, ServiceError> {
+        if self.0.shutdown.load(Ordering::Acquire) {
+            return Err(ServiceError::Busy);
+        }
+        let Some((task, work, cancel)) = self.claim_task(Some(id)).await? else {
+            return Err(match self.get_task(id).await? {
+                Some(_) => ServiceError::Conflict("the task is not queued".into()),
+                None => ServiceError::NotFound,
+            });
+        };
+        self.run_claimed(task, work, cancel).await;
+        self.get_task(id).await?.ok_or(ServiceError::NotFound)
     }
 
     pub(super) async fn maintenance(inner: std::sync::Weak<super::ServiceInner>) {

@@ -284,3 +284,80 @@ async fn process_retries_keep_the_original_task_after_source_deletion() {
     ));
     service.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn repeated_crashes_fail_a_task_until_it_is_retried() {
+    let directory = TempDir::new().unwrap();
+    Datalith::new(directory.path()).await.unwrap().close().await;
+    let pool = SqlitePool::connect_with(
+        SqliteConnectOptions::new().filename(directory.path().join(PATH_DB_FILE)),
+    )
+    .await
+    .unwrap();
+    let id =
+        store_pending_task(directory.path(), &pool, TaskStatus::Running, "crashing-upload").await;
+    // Two earlier starts already found this task running.
+    sqlx::query("UPDATE tasks SET crash_count=2 WHERE id=?").bind(id).execute(&pool).await.unwrap();
+    pool.close().await;
+
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    let task = service.get_task(id).await.unwrap().unwrap();
+    assert_eq!(TaskStatus::Failed, task.status);
+    assert_eq!("repeated_interruption", task.error.unwrap().code);
+    assert_eq!(1, task.attempt);
+    let input = directory.path().join("datalith.tasks").join(id.to_string()).join("input");
+    assert!(fs::try_exists(input).await.unwrap());
+
+    assert_eq!(TaskStatus::Queued, service.retry_task(id).await.unwrap().status);
+    assert_eq!(2, wait_task(&service, id).await.attempt);
+    service.close().await.unwrap();
+    drop(service);
+
+    let pool = SqlitePool::connect_with(
+        SqliteConnectOptions::new().filename(directory.path().join(PATH_DB_FILE)),
+    )
+    .await
+    .unwrap();
+    let crash_count: i64 = sqlx::query_scalar("SELECT crash_count FROM tasks WHERE id=?")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(0, crash_count);
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn a_service_without_workers_runs_only_the_requested_task() {
+    let directory = TempDir::new().unwrap();
+    let service = DatalithService::new_without_workers(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    let upload = service.submit_upload(CONTENT, UploadOptions::default(), None).await.unwrap();
+    let export = service.submit_export(Default::default(), None).await.unwrap();
+    let exported = service.run_task(export.id).await.unwrap();
+    assert_eq!(TaskStatus::Succeeded, exported.status, "{:?}", exported.error);
+    // The upload is still queued, so the archive has no media.
+    assert_eq!(0, exported.result.unwrap()["media_count"]);
+    drop(service.open_artifact(export.id).await.unwrap());
+    assert_eq!(TaskStatus::Queued, service.get_task(upload.id).await.unwrap().unwrap().status);
+    service.close().await.unwrap();
+    drop(service);
+
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    wait_task(&service, upload.id).await;
+    service.close().await.unwrap();
+}

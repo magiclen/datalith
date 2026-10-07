@@ -247,6 +247,17 @@ impl Datalith {
         if version == 1 {
             crate::service::migration::upgrade(pool, environment).await?;
         }
+        // Version 2 stores created before the crash counter existed do not have its column yet.
+        let crash_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name = 'crash_count'",
+        )
+        .fetch_one(pool)
+        .await?;
+        if crash_count == 0 {
+            sqlx::query("ALTER TABLE tasks ADD COLUMN crash_count INTEGER NOT NULL DEFAULT 0")
+                .execute(pool)
+                .await?;
+        }
         let created: String =
             sqlx::query_scalar("SELECT value FROM sys_db_information WHERE key='create_time'")
                 .fetch_one(pool)

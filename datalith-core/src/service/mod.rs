@@ -77,6 +77,24 @@ impl DatalithService {
     /// Start the service, recover unfinished tasks, and run the background workers.
     /// Only one service can use a store at a time.
     pub async fn new(datalith: Datalith, config: ServiceConfig) -> Result<Self, ServiceError> {
+        Self::start(datalith, config, true).await
+    }
+
+    /// Start the service like `new`, but without task workers, so queued tasks only run through `run_task`.
+    /// Recovery, cleanup, and maintenance still run.
+    /// This suits a command-line transfer which must not process the rest of the queue.
+    pub async fn new_without_workers(
+        datalith: Datalith,
+        config: ServiceConfig,
+    ) -> Result<Self, ServiceError> {
+        Self::start(datalith, config, false).await
+    }
+
+    async fn start(
+        datalith: Datalith,
+        config: ServiceConfig,
+        spawn_workers: bool,
+    ) -> Result<Self, ServiceError> {
         if config.workers == 0
             || config.workers > 64
             || config.max_file_size == 0
@@ -127,7 +145,7 @@ impl DatalithService {
         service.clear_untracked_files().await?;
         store::sync_directory(service.0.datalith.get_environment()).await?;
         let mut workers = service.0.workers.lock().await;
-        for _ in 0..service.0.config.workers {
+        for _ in 0..if spawn_workers { service.0.config.workers } else { 0 } {
             let worker = Arc::downgrade(&service.0);
             workers.push(tokio::spawn(async move {
                 Self::worker(worker).await;

@@ -52,6 +52,7 @@ The input can be any `AsyncRead + Unpin`, including a Tokio file.
 `submit_upload_file` and `submit_import_file` take a file path and link the file instead of copying it when the file system allows it, so keep that file unchanged afterwards.
 An optional idempotency key avoids duplicate tasks when the same request is sent again.
 Tasks recover after restart, and failed or cancelled tasks can be retried while their input is kept.
+A task still running after three unexpected stops in a row fails with error code `repeated_interruption`.
 
 ## Enable automatic conversion
 
@@ -98,6 +99,7 @@ See the [media settings guide](../datalith/README.md#media-settings) for the out
 | `submit_mp4_export` | Copy a stored video version and its best allowed audio into a temporary MP4. |
 | `submit_export`, `submit_import`, `open_artifact` | Move media through TAR archives. |
 | `cancel_task`, `retry_task` | Cancel work or retry a failed or cancelled task. |
+| `new_without_workers`, `run_task` | Start without task workers and run one queued task, such as a command-line transfer, without processing the rest of the queue. |
 | `delete_media` | Remove media; shared files stay while another item or reader needs them. |
 | `close` | Stop workers before closing storage. |
 

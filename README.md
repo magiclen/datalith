@@ -54,6 +54,7 @@ Each upload can have its own output settings and original-file preference.
 After the upload finishes, you get a task ID without waiting for conversion.
 Check the task for its progress and result, or request cancellation and retry.
 Unfinished tasks recover after a service restart.
+A task that keeps stopping the service fails instead of running again, so it cannot block the queue.
 
 ### Move and reuse your media
 

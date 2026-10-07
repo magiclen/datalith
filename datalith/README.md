@@ -131,6 +131,8 @@ Wait for `succeeded`, then read the Media object in `result`.
 Automatic uploads have task kind `upload`; `result.kind` reports `resource`, `image`, `audio`, or `video`.
 `failed` includes an error code and a readable message.
 You can request cancellation with `POST /api/v1/tasks/TASK_ID/cancel` or retry failed and cancelled tasks with `POST /api/v1/tasks/TASK_ID/retry`.
+If the service stops unexpectedly three times in a row while it runs a task, that task fails with error code `repeated_interruption` instead of running again; retry it after fixing the cause.
+A normal shutdown does not count, because it puts the interrupted task back into the queue.
 
 An `Idempotency-Key` header lets a repeated request return the same task while its record is kept.
 Reusing a key with different content or settings returns a conflict.
@@ -233,6 +235,7 @@ The import result reports any ID changes needed to avoid conflicts.
 Archives contain media, saved originals, and generated outputs, including HLS segments, with one copy of each unique file.
 They do not transfer server settings, task history, playback sessions, or temporary MP4 exports.
 Export briefly pauses writes and new single-use claims, while ordinary downloads continue.
+Requests that arrive during the pause get `503` with `Retry-After`; uploads already being saved finish and are queued.
 
 The standalone CLI can also move data:
 
@@ -242,6 +245,7 @@ datalith --environment ./destination import ./media.tar
 ```
 
 Stop any service using those data folders before running the CLI.
+The CLI runs only its own export or import; other queued tasks stay queued until the service starts again.
 Use HTTP transfers when the service must stay running.
 
 Before upgrading, stop the service and copy the whole data folder to a safe place.

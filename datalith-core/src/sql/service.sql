@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     metadata TEXT NOT NULL,
     work TEXT NOT NULL,
     idempotency_key TEXT UNIQUE,
-    fingerprint TEXT NOT NULL
+    fingerprint TEXT NOT NULL,
+    -- The number of starts in a row which found this task still running after the process stopped
+    crash_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS tasks_queue ON tasks(status, created_at, id);
 CREATE TABLE IF NOT EXISTS archive_imports (

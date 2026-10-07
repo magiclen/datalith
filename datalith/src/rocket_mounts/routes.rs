@@ -149,7 +149,7 @@ pub(super) async fn import(
     operation_id = "exportMedia",
     summary = "Export all media or selected IDs",
     tag = "Tasks",
-    description = "Export briefly pauses content writes, file cleanup, and single-use claims while it records the selected media, then writes the archive from that snapshot. Normal downloads continue. Archive version 2 contains a manifest, complete HLS inventory, and one copy of each unique file content, including originals, image and standalone audio outputs, and HLS initialization files and segments. Sessions, task history, settings, and temporary MP4 artifacts are not transferred.",
+    description = "Export briefly pauses content writes, file cleanup, and single-use claims while it records the selected media, then writes the archive from that snapshot. Requests that arrive during the pause get 503 with Retry-After; uploads already being saved finish and are queued. Normal downloads continue. Archive version 2 contains a manifest, complete HLS inventory, and one copy of each unique file content, including originals, image and standalone audio outputs, and HLS initialization files and segments. Sessions, task history, settings, and temporary MP4 artifacts are not transferred.",
     request_body = datalith_core::ExportOptions,
     params(
         ("Idempotency-Key" = Option<String>, Header, description = "An ASCII key stored with the task for seven days by default. The same key and input return the existing task. Different input with the same key returns 409.")

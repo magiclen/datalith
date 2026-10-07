@@ -4,7 +4,7 @@ extern crate rocket;
 mod cli;
 mod rocket_mounts;
 
-use std::{path::Path, time::Duration};
+use std::path::Path;
 
 use cli::{Command, get_args};
 use datalith_core::{
@@ -12,24 +12,20 @@ use datalith_core::{
     TaskStatus, Uuid,
 };
 
-async fn wait_task(service: &DatalithService, id: Uuid) -> anyhow::Result<Task> {
-    loop {
-        let task = service
-            .get_task(id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Task {id} was not found."))?;
-        match task.status {
-            TaskStatus::Succeeded => return Ok(task),
-            TaskStatus::Failed => {
-                let message = task
-                    .error
-                    .map(|error| error.message)
-                    .unwrap_or_else(|| "Unknown task error".into());
-                anyhow::bail!("Task {id} failed: {message}");
-            },
-            TaskStatus::Cancelled => anyhow::bail!("Task {id} was cancelled."),
-            _ => tokio::time::sleep(Duration::from_millis(200)).await,
-        }
+// Run one queued task without processing the rest of the queue.
+async fn run_task(service: &DatalithService, id: Uuid) -> anyhow::Result<Task> {
+    let task = service.run_task(id).await?;
+    match task.status {
+        TaskStatus::Succeeded => Ok(task),
+        TaskStatus::Failed => {
+            let message = task
+                .error
+                .map(|error| error.message)
+                .unwrap_or_else(|| "Unknown task error".into());
+            anyhow::bail!("Task {id} failed: {message}");
+        },
+        TaskStatus::Cancelled => anyhow::bail!("Task {id} was cancelled."),
+        _ => anyhow::bail!("Task {id} was interrupted."),
     }
 }
 
@@ -38,7 +34,7 @@ async fn export(service: &DatalithService, output: &Path, ids: Vec<Uuid>) -> any
         ids: if ids.is_empty() { None } else { Some(ids) }
     };
     let submitted = service.submit_export(options, None).await?;
-    let task = wait_task(service, submitted.id).await?;
+    let task = run_task(service, submitted.id).await?;
     let content = service.open_artifact(task.id).await?;
     let mut source = content.file.into_std().await;
     let output = output.to_owned();
@@ -94,8 +90,14 @@ fn main() -> anyhow::Result<()> {
             image_limits:                                        Default::default(),
         };
         let temporary_directory = datalith.get_environment().join(PATH_TEMPORARY_FILE_DIRECTORY);
-        let service = DatalithService::new(datalith, config).await?;
-        let result: anyhow::Result<()> = match args.command.unwrap_or(Command::Serve) {
+        let command = args.command.unwrap_or(Command::Serve);
+        // Transfers run only their own task, so that queued media work waits for the service.
+        let service = if matches!(command, Command::Serve) {
+            DatalithService::new(datalith, config).await?
+        } else {
+            DatalithService::new_without_workers(datalith, config).await?
+        };
+        let result: anyhow::Result<()> = match command {
             Command::Serve => {
                 let rocket = rocket_mounts::create(
                     args.address,
@@ -115,7 +117,7 @@ fn main() -> anyhow::Result<()> {
             } => {
                 async {
                     let submitted = service.submit_import_file(&file, None).await?;
-                    let task = wait_task(&service, submitted.id).await?;
+                    let task = run_task(&service, submitted.id).await?;
                     println!("{}", serde_json::to_string(&task)?);
                     Ok(())
                 }

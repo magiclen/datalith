@@ -8,7 +8,7 @@ use datalith_core::{
     TaskStatus, UploadOptions, Uuid,
 };
 use serde_json::Value;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 async fn service() -> (tempfile::TempDir, DatalithService) {
     let directory = tempfile::tempdir().unwrap();
@@ -301,4 +301,38 @@ async fn import_preserves_content_whose_storage_id_was_released() {
     assert!(!exported(&target).await.is_empty());
     source.close().await.unwrap();
     target.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn export_completes_while_a_slow_upload_is_streaming() {
+    let (_directory, service) = service().await;
+    let (mut writer, reader) = tokio::io::duplex(64);
+    let uploading = {
+        let service = service.clone();
+        tokio::spawn(
+            async move { service.submit_upload(reader, UploadOptions::default(), None).await },
+        )
+    };
+    writer.write_all(b"slow ").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // The upload is still streaming, so the export must not wait for it.
+    let export = service.submit_export(ExportOptions::default(), None).await.unwrap();
+    let export = completed(&service, export.id).await;
+    assert_eq!(TaskStatus::Succeeded, export.status, "{:?}", export.error);
+    assert_eq!(0, export.result.unwrap()["media_count"]);
+
+    writer.write_all(b"upload").await.unwrap();
+    drop(writer);
+    let upload = uploading.await.unwrap().unwrap();
+    let upload = completed(&service, upload.id).await;
+    assert_eq!(TaskStatus::Succeeded, upload.status, "{:?}", upload.error);
+    let media: Media = serde_json::from_value(upload.result.unwrap()).unwrap();
+    let mut content =
+        service.open_content(media.id, ContentRequest::default(), false).await.unwrap();
+    let mut bytes = Vec::new();
+    content.file.read_to_end(&mut bytes).await.unwrap();
+    assert_eq!(b"slow upload".as_slice(), bytes);
+    drop(content);
+    service.close().await.unwrap();
 }
