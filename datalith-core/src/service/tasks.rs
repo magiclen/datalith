@@ -56,6 +56,25 @@ impl PendingDirectory {
 
 type StagedTask = (Uuid, PendingDirectory, StagedInput);
 
+/// Stop blocking work at a cancellation, or at a shutdown, which puts the task back into the queue.
+#[derive(Clone)]
+pub(super) struct Interruption {
+    pub cancel:   Arc<AtomicBool>,
+    pub shutdown: Arc<AtomicBool>,
+}
+
+impl Interruption {
+    pub fn check(&self) -> Result<(), ServiceError> {
+        if self.cancel.load(Ordering::Acquire) {
+            Err(ServiceError::Cancelled)
+        } else if self.shutdown.load(Ordering::Acquire) {
+            Err(ServiceError::Busy)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 impl DatalithService {
     /// Queue an upload; the returned task creates the media.
     /// A repeated request with the same idempotency key and content returns the first task.
@@ -293,6 +312,12 @@ impl DatalithService {
             return Err(ServiceError::Unsupported("image processing is disabled".into()));
         }
         Ok(())
+    }
+
+    pub(super) fn interruption(&self, cancel: &Arc<AtomicBool>) -> Interruption {
+        Interruption {
+            cancel: cancel.clone(), shutdown: self.0.shutdown.clone()
+        }
     }
 
     pub(super) async fn pending_directory(
@@ -1111,7 +1136,7 @@ impl DatalithService {
                 let image_input = input.clone();
                 let image_options = options.image.clone();
                 let limits = recipe.image_limits.clone();
-                let image_cancel = cancel.clone();
+                let interruption = self.interruption(&cancel);
                 let detected_mime = crate::functions::detect_file_type_by_path(&input)
                     .await
                     .map(|mime| mime.essence_str().to_owned());
@@ -1121,7 +1146,7 @@ impl DatalithService {
                         &output,
                         &image_options,
                         &limits,
-                        &image_cancel,
+                        &interruption,
                         detected_mime.as_deref(),
                     )
                 })
@@ -1305,6 +1330,47 @@ fn status_name(status: TaskStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Datalith, ServiceConfig};
+
+    #[tokio::test]
+    async fn shutdown_returns_a_running_export_to_the_queue() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = DatalithService::new_without_workers(
+            Datalith::new(directory.path()).await.unwrap(),
+            ServiceConfig::default(),
+        )
+        .await
+        .unwrap();
+        let upload = service
+            .submit_upload(b"exported content".as_slice(), UploadOptions::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(TaskStatus::Succeeded, service.run_task(upload.id).await.unwrap().status);
+        let export = service.submit_export(ExportOptions::default(), None).await.unwrap();
+        let (task, work, cancel) = service.claim_task(Some(export.id)).await.unwrap().unwrap();
+        // A normal shutdown begins after the task has started.
+        service.0.shutdown.store(true, Ordering::Release);
+        service.run_claimed(task, work, cancel).await;
+        let task = service.get_task(export.id).await.unwrap().unwrap();
+        assert_eq!(TaskStatus::Queued, task.status, "{:?}", task.error);
+        assert!(
+            !fs::try_exists(service.work_directory(export.id).join("export.tar")).await.unwrap()
+        );
+        service.close().await.unwrap();
+        drop(service);
+
+        let service = DatalithService::new_without_workers(
+            Datalith::new(directory.path()).await.unwrap(),
+            ServiceConfig::default(),
+        )
+        .await
+        .unwrap();
+        let task = service.run_task(export.id).await.unwrap();
+        assert_eq!(TaskStatus::Succeeded, task.status, "{:?}", task.error);
+        assert_eq!(2, task.attempt);
+        assert_eq!(1, task.result.unwrap()["media_count"]);
+        service.close().await.unwrap();
+    }
 
     #[test]
     fn legacy_request_identity_ignores_default_additions_and_recipe_snapshots() {

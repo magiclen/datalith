@@ -11,7 +11,7 @@ use std::{
 use flate2::read::GzDecoder;
 use resvg::{tiny_skia, usvg};
 
-use super::{ImageLimits, ServiceError, image_processor::check_dimensions};
+use super::{ImageLimits, ServiceError, image_processor::check_dimensions, tasks::Interruption};
 
 const MAX_SVG_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SVG_DEPTH: usize = 32;
@@ -125,7 +125,7 @@ pub(super) fn render(
     input: &Path,
     output: &Path,
     limits: &ImageLimits,
-    cancel: &AtomicBool,
+    interruption: &Interruption,
 ) -> Result<Option<RenderedSvg>, ServiceError> {
     let (data, compressed) = read_svg(File::open(input)?)?;
     let Some(data) = data else {
@@ -227,15 +227,11 @@ pub(super) fn render(
     let canvas = u64::from(size.width()) * u64::from(size.height());
     let mut pixels = canvas;
     check_images(tree.root(), limits, canvas, &mut pixels)?;
-    if cancel.load(Ordering::Acquire) {
-        return Err(ServiceError::Cancelled);
-    }
+    interruption.check()?;
     let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height())
         .ok_or_else(|| ServiceError::Invalid("Cannot allocate the SVG image.".into()))?;
     resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
-    if cancel.load(Ordering::Acquire) {
-        return Err(ServiceError::Cancelled);
-    }
+    interruption.check()?;
     let path = output.join("svg.png");
     pixmap
         .save_png(&path)

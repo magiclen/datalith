@@ -4,10 +4,7 @@ use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    sync::{
-        OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::OnceLock,
 };
 
 use image_convert::{
@@ -20,6 +17,7 @@ use uuid::Uuid;
 
 use super::{
     ImageLimits, ImageOptions, ImageVariantSpec, ProcessingMethod, ProcessingMode, ServiceError,
+    tasks::Interruption,
 };
 
 pub(crate) struct ProcessedImage {
@@ -43,10 +41,6 @@ pub(crate) struct ProcessedVariant {
 
 fn image_error(error: impl std::fmt::Display) -> ServiceError {
     ServiceError::Invalid(format!("Image processing failed: {error}"))
-}
-
-fn check_cancel(cancel: &AtomicBool) -> Result<(), ServiceError> {
-    if cancel.load(Ordering::Acquire) { Err(ServiceError::Cancelled) } else { Ok(()) }
 }
 
 pub(crate) fn validate_options(
@@ -267,7 +261,7 @@ fn image_resource(path: &Path, format: Option<&str>) -> Result<ImageResource, Se
 
 /// Check whether ImageMagick can identify an image file, without decoding its pixels.
 /// libmagic also reports formats such as CAD drawings as images, and automatic conversion keeps them as resources.
-pub(crate) fn identifiable(
+pub(super) fn identifiable(
     input: &Path,
     detected_mime: Option<&str>,
 ) -> Result<bool, ServiceError> {
@@ -283,19 +277,19 @@ pub(crate) fn identifiable(
 
 /// Process an image file.
 /// `detected_mime` is the type that libmagic detected for `input`, if any.
-pub(crate) fn process_image(
+pub(super) fn process_image(
     input: &Path,
     output_dir: &Path,
     options: &ImageOptions,
     limits: &ImageLimits,
-    cancel: &AtomicBool,
+    interruption: &Interruption,
     detected_mime: Option<&str>,
 ) -> Result<ProcessedImage, ServiceError> {
     validate_options(options, limits)?;
-    check_cancel(cancel)?;
+    interruption.check()?;
     reject_ghostscript_formats(input)?;
     configure_resources()?;
-    let svg = super::svg::render(input, output_dir, limits, cancel)?;
+    let svg = super::svg::render(input, output_dir, limits, interruption)?;
     let source = svg.as_ref().map_or(input, |svg| svg.path.as_path());
     let format = if svg.is_some() { None } else { explicit_format(source, detected_mime)? };
     let input = image_resource(source, format)?;
@@ -309,7 +303,7 @@ pub(crate) fn process_image(
         preflight_frames,
         limits,
     )?;
-    check_cancel(cancel)?;
+    interruption.check()?;
     let mut decoded = None;
     let metadata = identify_read(&mut decoded, &input).map_err(image_error)?;
     let mut wand = decoded
@@ -361,7 +355,7 @@ pub(crate) fn process_image(
     }
     wand.reset_iterator();
     check_dimensions(max_width as u64, max_height as u64, u64::from(frame_count), limits)?;
-    check_cancel(cancel)?;
+    interruption.check()?;
     if animated {
         wand = wand.coalesce().map_err(image_error)?;
         wand.reset_iterator();
@@ -379,7 +373,7 @@ pub(crate) fn process_image(
     let mut variants = Vec::new();
 
     for spec in &options.variants {
-        check_cancel(cancel)?;
+        interruption.check()?;
         let crop = spec.crop.as_ref().map(|crop| Crop::Center(crop.width, crop.height));
         let (cropped, _) = fetch_magic_wand(&source, &WEBPConfig {
             crop,
@@ -414,7 +408,7 @@ pub(crate) fn process_image(
             let formats: &[&str] =
                 if animated { &["webp", "gif", fallback] } else { &["webp", fallback] };
             for format in formats {
-                check_cancel(cancel)?;
+                interruption.check()?;
                 if can_reuse
                     && (!animated || matches!(*format, "webp" | "gif"))
                     && spec.crop.is_none()
@@ -478,7 +472,7 @@ pub(crate) fn process_image(
             }
         }
     }
-    check_cancel(cancel)?;
+    interruption.check()?;
     Ok(ProcessedImage {
         variants,
         animated,

@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use super::{
     DatalithService, ExportOptions, HlsInventory, Media, MediaFile, PreparedFile, ServiceError,
-    migration::content_path,
+    migration::content_path, tasks::Interruption,
 };
 use crate::{PATH_FILE_DIRECTORY, guard::OpenGuard};
 
@@ -187,9 +187,9 @@ impl DatalithService {
         } = self.snapshot_archive(task_id, options, &cancel).await?;
         let media_count = manifest.media.len();
         let directory = self.work_directory(task_id);
-        let worker_cancel = cancel.clone();
+        let interruption = self.interruption(&cancel);
         let (sha256, file_size) = tokio::task::spawn_blocking(move || {
-            write_archive(&directory, manifest, contents, &worker_cancel)
+            write_archive(&directory, manifest, contents, &interruption)
         })
         .await
         .map_err(|error| ServiceError::Internal(error.to_string()))??;
@@ -213,9 +213,9 @@ impl DatalithService {
     ) -> Result<Value, ServiceError> {
         let directory = self.work_directory(task_id);
         let max_size = self.0.config.max_file_size;
-        let worker_cancel = cancel.clone();
+        let interruption = self.interruption(&cancel);
         let mut archive = tokio::task::spawn_blocking(move || {
-            validate_archive(&directory, max_size, &worker_cancel)
+            validate_archive(&directory, max_size, &interruption)
         })
         .await
         .map_err(|error| ServiceError::Internal(error.to_string()))??;
@@ -389,9 +389,9 @@ fn write_archive(
     directory: &Path,
     manifest: Manifest,
     contents: BTreeMap<String, (u64, PathBuf)>,
-    cancel: &Arc<AtomicBool>,
+    interruption: &Interruption,
 ) -> Result<(String, u64), ServiceError> {
-    check_cancelled(cancel)?;
+    interruption.check()?;
     let manifest = serde_json::to_vec(&manifest)?;
     if manifest.len() as u64 > MAX_MANIFEST_SIZE {
         return Err(archive_error("archive manifest exceeds 64 MiB; export smaller groups"));
@@ -407,20 +407,20 @@ fn write_archive(
         let mut builder = tar::Builder::new(&mut writer);
         append_header(&mut builder, "manifest.json", manifest.len() as u64, manifest.as_slice())?;
         for (hash, (size, path)) in contents {
-            check_cancelled(cancel)?;
+            interruption.check()?;
             let source = File::open(path)?;
             if source.metadata()?.len() != size {
                 return Err(archive_error("stored file size does not match metadata"));
             }
             let mut source = HashingReader {
-                inner:  BufReader::with_capacity(COPY_BUFFER_SIZE, source),
-                hash:   Sha256::new(),
-                cancel: cancel.clone(),
+                inner:        BufReader::with_capacity(COPY_BUFFER_SIZE, source),
+                hash:         Sha256::new(),
+                interruption: interruption.clone(),
             };
             if let Err(error) =
                 append_header(&mut builder, &format!("blobs/{hash}"), size, &mut source)
             {
-                check_cancelled(cancel)?;
+                interruption.check()?;
                 return Err(error.into());
             }
             if hex::encode(source.hash.finalize()) != hash {
@@ -435,7 +435,7 @@ fn write_archive(
     // The writer borrows the output file, so drop it before syncing the file.
     drop(writer);
     output.as_file().sync_all()?;
-    check_cancelled(cancel)?;
+    interruption.check()?;
     output.persist(directory.join("export.tar")).map_err(|error| error.error)?;
     File::open(directory)?.sync_all()?;
     Ok((digest, size))
@@ -461,15 +461,15 @@ impl<W: Write> Write for HashingWriter<W> {
 }
 
 struct HashingReader<R> {
-    inner:  R,
-    hash:   Sha256,
-    cancel: Arc<AtomicBool>,
+    inner:        R,
+    hash:         Sha256,
+    interruption: Interruption,
 }
 
 impl<R: Read> Read for HashingReader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if self.cancel.load(Ordering::Acquire) {
-            return Err(io::Error::other("task cancelled"));
+        if self.interruption.check().is_err() {
+            return Err(io::Error::other("task interrupted"));
         }
         let count = self.inner.read(buffer)?;
         self.hash.update(&buffer[..count]);
@@ -480,24 +480,26 @@ impl<R: Read> Read for HashingReader<R> {
 fn validate_archive(
     directory: &Path,
     max_size: u64,
-    cancel: &Arc<AtomicBool>,
+    interruption: &Interruption,
 ) -> Result<ValidatedArchive, ServiceError> {
-    let result = validate_archive_inner(directory, max_size, cancel);
-    check_cancelled(cancel)?;
+    let result = validate_archive_inner(directory, max_size, interruption);
+    interruption.check()?;
     result
 }
 
 fn validate_archive_inner(
     directory: &Path,
     max_size: u64,
-    cancel: &Arc<AtomicBool>,
+    interruption: &Interruption,
 ) -> Result<ValidatedArchive, ServiceError> {
     let input = File::open(directory.join("input"))?;
     if input.metadata()?.len() > max_size {
         return Err(ServiceError::PayloadTooLarge);
     }
     let reader = HashingReader {
-        inner: input, hash: Sha256::new(), cancel: cancel.clone()
+        inner:        input,
+        hash:         Sha256::new(),
+        interruption: interruption.clone(),
     };
     let mut archive = tar::Archive::new(reader);
     let extracted = tempfile::Builder::new().prefix("import-").tempdir_in(directory)?;
@@ -506,7 +508,7 @@ fn validate_archive_inner(
     let mut seen = HashSet::new();
     let mut extracted_size = 0u64;
     for entry in archive.entries()?.raw(true) {
-        check_cancelled(cancel)?;
+        interruption.check()?;
         let mut entry = entry?;
         if !entry.header().entry_type().is_file() {
             return Err(archive_error("archive entries must be regular files"));
@@ -561,7 +563,7 @@ fn validate_archive_inner(
         let mut hasher = Sha256::new();
         let mut buffer = [0u8; 64 * 1024];
         loop {
-            check_cancelled(cancel)?;
+            interruption.check()?;
             let count = entry.read(&mut buffer)?;
             if count == 0 {
                 break;
@@ -815,7 +817,8 @@ mod tests {
         assert_eq!(1, mappings);
 
         let archive_directory = tempfile::tempdir().unwrap();
-        write_archive(archive_directory.path(), manifest, contents, &cancel).unwrap();
+        let interruption = source.interruption(&cancel);
+        write_archive(archive_directory.path(), manifest, contents, &interruption).unwrap();
         drop(guards);
         source.clear_released_files().await.unwrap();
         source.clear_untracked_files().await.unwrap();
