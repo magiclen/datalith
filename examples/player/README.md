@@ -1,6 +1,6 @@
 # Video playback example
 
-Open `/api/v1/player` on your Datalith service.
+Open `/player` on your Datalith service.
 Enter the ID of a processed video, choose **Load media**, then **Start playback**.
 This page is a small playback example, not a client library or file manager.
 

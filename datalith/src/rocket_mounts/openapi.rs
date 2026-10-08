@@ -200,7 +200,7 @@ pub(super) enum ContentFormat {
 
 #[derive(OpenApi)]
 #[openapi(
-    info(title = "Datalith API", version = "1.0.0", description = "A media store with files on disk, metadata and tasks in SQLite, image variants, AAC and FLAC audio, and H.264 HLS video. Uploads return durable tasks before conversion finishes. IDs are UUID strings, dates are UTC RFC 3339 strings, and file sizes and page totals are decimal strings. Authentication belongs to the trusted backend or reverse proxy.", license(name = "MIT", identifier = "MIT")),
+    info(title = "Datalith API", version = env!("CARGO_PKG_VERSION"), description = "A media store with files on disk, metadata and tasks in SQLite, image variants, AAC and FLAC audio, and H.264 HLS video. Uploads return durable tasks before conversion finishes. IDs are UUID strings, dates are UTC RFC 3339 strings, and file sizes and page totals are decimal strings. Authentication belongs to the trusted backend or reverse proxy."),
     servers((url = "..", description = "API root relative to this document.")),
     paths(
         routes::upload, routes::import, routes::export, routes::task, routes::cancel,
@@ -232,6 +232,9 @@ impl Modify for Documentation {
             schema::{AnyOfBuilder, ObjectBuilder, Schema, Type},
         };
         document.openapi = openapi::OpenApiVersion::Version31;
+        // utoipa fills these from Cargo.toml.
+        document.info.contact = None;
+        document.info.license = None;
         let schemas = &mut document.components.as_mut().expect("API schemas are generated").schemas;
         if let Some(RefOr::T(Schema::Object(task))) = schemas.get_mut("Task") {
             task.properties.insert(

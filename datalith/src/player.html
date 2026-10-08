@@ -70,10 +70,9 @@
       const ui = Object.fromEntries(["media-form", "media-id", "load", "status", "capability", "video", "start", "stop", "quality", "lossless", "native-flac", "note", "engine", "current", "buffer", "bandwidth", "throughput", "dropped", "startup", "session", "events", "clear"].map(id => [id, document.getElementById(id)]));
       const video = ui.video;
       const serviceRoot = new URL(window.location.href);
-      serviceRoot.pathname = serviceRoot.pathname.replace(/api\/v1\/player\/?$/, "");
+      serviceRoot.pathname = serviceRoot.pathname.replace(/player\/?$/, "");
       serviceRoot.search = "";
       serviceRoot.hash = "";
-      const apiRoot = new URL("api/v1/", serviceRoot);
       const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       let state = null;
       const eventLines = [];
@@ -92,7 +91,7 @@
 
       function serviceURL(path) {
         const url = new URL(path, serviceRoot);
-        if (url.origin !== apiRoot.origin || !url.pathname.startsWith(apiRoot.pathname)) throw new Error("Rejected media path.");
+        if (url.origin !== serviceRoot.origin || !url.pathname.startsWith(serviceRoot.pathname)) throw new Error("Rejected media path.");
         return url;
       }
 
@@ -455,7 +454,7 @@
         try {
           if (s.media.single_use && !s.session) {
             s.claimKey ||= newClaimKey();
-            const url = new URL(`media/${s.media.id}/playback-sessions`, apiRoot);
+            const url = new URL(`media/${s.media.id}/playback-sessions`, serviceRoot);
             const response = await request(url, { method: "POST", headers: { "Idempotency-Key": s.claimKey }, signal: s.abort.signal });
             const session = await response.json();
             if (!session.token || !Number.isFinite(Date.parse(session.expires_at))) throw new Error("Invalid session response.");
@@ -506,7 +505,7 @@
         for (const id of ["engine", "current", "buffer", "bandwidth", "throughput", "dropped", "startup", "session"]) ui[id].textContent = "—";
         ui.quality.replaceChildren(new Option("Auto", "auto"));
         try {
-          const response = await request(new URL(`media/${id}`, apiRoot), { signal: s.abort.signal });
+          const response = await request(new URL(`media/${id}`, serviceRoot), { signal: s.abort.signal });
           const media = await response.json();
           if (!media.video?.variants?.length || !media.video.master_path) throw new Error("This media has no video outputs.");
           if (media.id !== id) throw new Error("Unexpected media ID.");
@@ -658,7 +657,7 @@
         state.session = null;
       });
 
-      request(new URL("capabilities", apiRoot)).then(response => response.json()).then(capabilities => {
+      request(new URL("capabilities", serviceRoot)).then(response => response.json()).then(capabilities => {
         if (capabilities.media?.video === false) {
           ui.capability.textContent = "New video processing is unavailable. Stored videos can still play.";
           ui.capability.hidden = false;

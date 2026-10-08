@@ -1444,10 +1444,7 @@ async fn audiovisual_archives_roundtrip_and_restore_public_paths_without_process
         .unwrap();
     assert_ne!(video.id, remapped);
     let restored = target.get_media(remapped).await.unwrap().unwrap();
-    assert_eq!(
-        format!("api/v1/media/{remapped}/hls/master.m3u8"),
-        restored.video.unwrap().master_path
-    );
+    assert_eq!(format!("media/{remapped}/hls/master.m3u8"), restored.video.unwrap().master_path);
     assert!(
         target
             .hls_track(remapped, "144p25", None)

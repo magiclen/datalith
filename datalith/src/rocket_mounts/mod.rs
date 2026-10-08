@@ -19,7 +19,7 @@ use serde_json::json;
 use utoipa_swagger_ui::{Config as SwaggerConfig, SwaggerUi};
 
 fn swagger_config() -> SwaggerConfig<'static> {
-    SwaggerConfig::new(["json"]).validator_url("none")
+    SwaggerConfig::new(["json"]).validator_url("none").use_base_layout()
 }
 
 #[derive(Debug)]
@@ -185,7 +185,7 @@ pub fn create(
                 }
             })
         }))
-        .mount("/api/v1", routes![
+        .mount("/", routes![
             routes::upload,
             routes::import,
             routes::export,
@@ -213,5 +213,5 @@ pub fn create(
             content::get_artifact,
             content::head_artifact,
         ])
-        .mount("/", SwaggerUi::new("/api/v1/docs/<_..>").config(swagger_config()))
+        .mount("/", SwaggerUi::new("/docs/<_..>").config(swagger_config()))
 }

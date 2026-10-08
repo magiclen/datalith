@@ -30,7 +30,7 @@ To choose another folder, change only the host path in `volumes`.
 
 The port mapping is `127.0.0.1:1111:1111`.
 To use local port 2222, change it to `127.0.0.1:2222:1111`; the port inside the container stays 1111.
-Then open `http://127.0.0.1:2222/api/v1/docs`.
+Then open `http://127.0.0.1:2222/docs`.
 
 Check the service with `docker compose ps` and `docker compose logs --tail=100 app`.
 Logs are kept in up to three 10 MB files per container.
@@ -91,11 +91,11 @@ Use `datalith --help` for all options, including custom FFmpeg and ffprobe paths
 
 ## Upload files
 
-Every type uses `POST /api/v1/uploads` with one multipart `file` and an optional JSON `options` field.
+Every type uses `POST /uploads` with one multipart `file` and an optional JSON `options` field.
 Without options, the file is saved as a permanent resource without conversion.
 
 ```sh
-curl -F 'file=@./hello.txt' http://127.0.0.1:1111/api/v1/uploads
+curl -F 'file=@./hello.txt' http://127.0.0.1:1111/uploads
 ```
 
 Enable the conversions you want to allow and send their settings:
@@ -103,7 +103,7 @@ Enable the conversions you want to allow and send their settings:
 ```sh
 curl -F 'file=@./photo.jpg' \
   -F 'options={"enable_convert_to_image":true,"enable_convert_to_audio":true,"enable_convert_to_video":true,"image":{"variants":[{"name":"preview","max_width":1080,"max_height":1080,"multipliers":[1,2,3]}]},"video":{"variants":[{"resolution":720,"fps":30},{"resolution":1080,"fps":60}]}};type=application/json' \
-  http://127.0.0.1:1111/api/v1/uploads
+  http://127.0.0.1:1111/uploads
 ```
 
 Datalith checks the contents and selects a matching enabled type.
@@ -125,13 +125,13 @@ It does not wait for conversion.
 Poll the returned ID:
 
 ```sh
-curl http://127.0.0.1:1111/api/v1/tasks/TASK_ID
+curl http://127.0.0.1:1111/tasks/TASK_ID
 ```
 
 Wait for `succeeded`, then read the Media object in `result`.
 Automatic uploads have task kind `upload`; `result.kind` reports `resource`, `image`, `audio`, or `video`.
 `failed` includes an error code and a readable message.
-You can request cancellation with `POST /api/v1/tasks/TASK_ID/cancel` or retry failed and cancelled tasks with `POST /api/v1/tasks/TASK_ID/retry`.
+You can request cancellation with `POST /tasks/TASK_ID/cancel` or retry failed and cancelled tasks with `POST /tasks/TASK_ID/retry`.
 If the service stops unexpectedly three times in a row while it runs a task, that task fails with error code `repeated_interruption` instead of running again; retry it after fixing the cause.
 A normal shutdown does not count, because it puts the interrupted task back into the queue.
 
@@ -190,13 +190,13 @@ HLS provides the quality choices; the player decides when to switch.
 
 Images keep the original by default; audio and video do not.
 Set the matching `save_original` to keep a source for later processing.
-`POST /api/v1/media/MEDIA_ID/tasks` creates new media from a saved original and leaves the old item unchanged.
+`POST /media/MEDIA_ID/tasks` creates new media from a saved original and leaves the old item unchanged.
 This request requires `kind` to select `image`, `audio`, or `video`:
 
 ```sh
 curl -H 'Content-Type: application/json' \
   -d '{"kind":"image","image":{"variants":[{"name":"preview","max_width":640,"max_height":640}]}}' \
-  http://127.0.0.1:1111/api/v1/media/MEDIA_ID/tasks
+  http://127.0.0.1:1111/media/MEDIA_ID/tasks
 ```
 
 Leaving out `kind` returns `422` with error code `invalid_request`.
@@ -209,13 +209,13 @@ Reused files also keep their embedded metadata, such as EXIF location data; use 
 
 ## Get files and play media
 
-Use `GET /api/v1/media/MEDIA_ID` to read metadata and `GET /api/v1/media` to list items.
-Use `/api/v1/media/MEDIA_ID/content` for a resource, the default image, or standalone audio.
+Use `GET /media/MEDIA_ID` to read metadata and `GET /media` to list items.
+Use `/media/MEDIA_ID/content` for a resource, the default image, or standalone audio.
 For other outputs, use the paths returned in the Media object.
 Resolve those paths against the service root, including any reverse proxy prefix.
 
-For video, use `video.master_path` with an HLS player or open `/api/v1/player` to try the [playback example](../examples/player/README.md).
-Use `POST /api/v1/media/MEDIA_ID/mp4-exports` with `{"variant":"1080p60"}` to export an existing video version.
+For video, use `video.master_path` with an HLS player or open `/player` to try the [playback example](../examples/player/README.md).
+Use `POST /media/MEDIA_ID/mp4-exports` with `{"variant":"1080p60"}` to export an existing video version.
 It copies the stored streams into MP4 without encoding again and selects the best allowed audio: FLAC, higher AAC, then lower AAC.
 A FLAC MP4 needs a compatible player.
 After the task succeeds, use its returned artifact path to download it before expiry.
@@ -228,16 +228,16 @@ This is separate from task history and export retention.
 
 Set `retention.single_use` for one access claim.
 For resources and images, the first content GET claims the download; an interrupted download does not restore it.
-For audio and video, read the metadata first, then claim a playback session with `POST /api/v1/media/MEDIA_ID/playback-sessions`.
+For audio and video, read the metadata first, then claim a playback session with `POST /media/MEDIA_ID/playback-sessions`.
 Pass its `token` as `session=TOKEN` to protected content, HLS, and MP4 requests.
 The session allows seeking and replay until expiry; it is one claim, not one viewing.
 Use an `Idempotency-Key` for the claim so a retry can recover the same token.
 
 ## Move data, back up, and upgrade
 
-Use `POST /api/v1/exports` with `{}` to export all available media, or `{"ids":["MEDIA_ID"]}` for selected items.
+Use `POST /exports` with `{}` to export all available media, or `{"ids":["MEDIA_ID"]}` for selected items.
 After the task succeeds, download its artifact.
-Upload that TAR file to `POST /api/v1/imports` using the multipart `file` field on another service.
+Upload that TAR file to `POST /imports` using the multipart `file` field on another service.
 The import result reports any ID changes needed to avoid conflicts.
 
 Archives contain media, saved originals, and generated outputs, including HLS segments, with one copy of each unique file.
@@ -263,7 +263,7 @@ Startup upgrades the original version 1 database to version 2 and keeps media ID
 It saves `datalith.sqlite.v1.bak` before the upgrade and removes the old resource and image tables after their data has been moved.
 This database backup is not a full data backup.
 Development database formats between these versions are not supported.
-The old HTTP API and Node.js client are not compatible with `/api/v1`.
+The old HTTP API and Node.js client are not compatible with this API.
 
 Old Docker deployments used `Dockerfile.image` and `docker-compose.image.yml`.
 The full build now uses `Dockerfile` with the `media` target, and the start command is `docker compose up --build -d`.
@@ -271,9 +271,9 @@ The host data location is unchanged; `/app/shared/db` inside the old container i
 
 ## API and native builds
 
-Open `/api/v1/docs` for Swagger UI and `/api/v1/docs/json` for the generated OpenAPI document.
+Open `/docs` for Swagger UI and `/docs/json` for the generated OpenAPI document.
 The UI is included in the service and needs no CDN.
-`/api/v1/capabilities` reports available processing features and limits.
+`/capabilities` reports available processing features and limits.
 Use error codes rather than message text when an application handles errors.
 
 Native builds need Linux, Rust 1.94 or later, libmagic development files, and ImageMagick 7.1.1 or later below 7.2.

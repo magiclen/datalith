@@ -78,9 +78,9 @@ If you already use Datalith, keep your existing folder and make a backup before 
 The container runs as UID 1000, so that user must be able to write to the folder.
 The first build takes time because it builds the media tools.
 
-Open [the API guide](http://127.0.0.1:1111/api/v1/docs) to try requests.
+Open [the API guide](http://127.0.0.1:1111/docs) to try requests.
 Datalith is a service API; this page is not a file manager.
-A video playback example is available at [the player page](http://127.0.0.1:1111/api/v1/player).
+A video playback example is available at [the player page](http://127.0.0.1:1111/player).
 
 ```sh
 docker compose ps
@@ -103,8 +103,8 @@ See the [service guide](datalith/README.md) for important settings, uploads, bac
 - [Video playback example](examples/player/README.md)
 - [Media tool builds and licenses](FFMPEG.md)
 
-The API uses `/api/v1`.
-Swagger UI is at `/api/v1/docs`, and its OpenAPI JSON is at `/api/v1/docs/json`.
+API paths start at the service root, such as `/uploads` and `/media`.
+Swagger UI is at `/docs`, and its OpenAPI JSON is at `/docs/json`.
 The older Node.js client does not support this API; a new client is a separate project.
 
 ## License

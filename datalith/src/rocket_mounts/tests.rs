@@ -44,7 +44,7 @@ fn multipart_header() -> Header<'static> {
 async fn wait_task(client: &Client, submitted: Task) -> Task {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let response = client.get(format!("/api/v1/tasks/{}", submitted.id)).dispatch().await;
+            let response = client.get(format!("/tasks/{}", submitted.id)).dispatch().await;
             assert_eq!(Status::Ok, response.status());
             let task: Task = response.into_json().await.unwrap();
             if task.status.is_terminal() {
@@ -60,7 +60,7 @@ async fn wait_task(client: &Client, submitted: Task) -> Task {
 
 async fn upload(client: &Client, options: Value) -> Task {
     let response = client
-        .post("/api/v1/uploads")
+        .post("/uploads")
         .header(multipart_header())
         .body(multipart(b"Hello world!", Some(options)))
         .dispatch()
@@ -70,7 +70,7 @@ async fn upload(client: &Client, options: Value) -> Task {
 }
 
 async fn media_id(client: &Client) -> String {
-    let response = client.get("/api/v1/media").dispatch().await;
+    let response = client.get("/media").dispatch().await;
     let page: Value = response.into_json().await.unwrap();
     assert_eq!("1", page["total"]);
     page["items"][0]["id"].as_str().unwrap().to_owned()
@@ -81,7 +81,7 @@ async fn upload_download_ranges_and_conditional_requests() {
     let (client, service, _directory) = client().await;
     upload(&client, json!({})).await;
     let id = media_id(&client).await;
-    let path = format!("/api/v1/media/{id}/content");
+    let path = format!("/media/{id}/content");
     let response = client.get(&path).dispatch().await;
     assert_eq!(Status::Ok, response.status());
     assert_eq!(Some("bytes"), response.headers().get_one("Accept-Ranges"));
@@ -137,7 +137,7 @@ async fn upload_download_ranges_and_conditional_requests() {
     assert_eq!(Status::Ok, response.status());
     assert_eq!("Hello world!", response.into_string().await.unwrap());
 
-    let response = client.delete(format!("/api/v1/media/{id}")).dispatch().await;
+    let response = client.delete(format!("/media/{id}")).dispatch().await;
     assert_eq!(Status::NoContent, response.status());
     drop(response);
     let response = client.get(&path).header(Header::new("If-None-Match", etag)).dispatch().await;
@@ -154,7 +154,7 @@ async fn download_names_follow_rfc_8187() {
     let (client, service, _directory) = client().await;
     upload(&client, json!({"file_name": "photo (1).jpg"})).await;
     let id = media_id(&client).await;
-    let response = client.get(format!("/api/v1/media/{id}/content")).dispatch().await;
+    let response = client.get(format!("/media/{id}/content")).dispatch().await;
     assert_eq!(Status::Ok, response.status());
     assert_eq!(
         Some("inline; filename*=UTF-8''photo%20%281%29.jpg"),
@@ -167,24 +167,24 @@ async fn download_names_follow_rfc_8187() {
 #[rocket::async_test]
 async fn docs_serve_the_generated_api_and_embedded_swagger_ui() {
     let (client, service, _directory) = client().await;
-    let response = client.get("/api/v1/docs").dispatch().await;
+    let response = client.get("/docs").dispatch().await;
     assert_eq!(Status::PermanentRedirect, response.status());
     assert_eq!(Some("docs/"), response.headers().get_one("Location"));
     drop(response);
 
-    let response = client.get("/api/v1/docs/").dispatch().await;
+    let response = client.get("/docs/").dispatch().await;
     assert_eq!(Status::Ok, response.status());
     assert!(response.into_string().await.unwrap().contains("Swagger UI"));
-    let response = client.get("/api/v1/docs/swagger-ui-bundle.js").dispatch().await;
+    let response = client.get("/docs/swagger-ui-bundle.js").dispatch().await;
     assert_eq!(Status::Ok, response.status());
     assert!(response.into_string().await.unwrap().contains("SwaggerUIBundle"));
-    let response = client.get("/api/v1/docs/swagger-initializer.js").dispatch().await;
+    let response = client.get("/docs/swagger-initializer.js").dispatch().await;
     assert_eq!(Status::Ok, response.status());
     let initializer = response.into_string().await.unwrap();
     assert!(initializer.contains("json"));
     assert!(initializer.contains("validatorUrl"));
 
-    let response = client.get("/api/v1/docs/json").dispatch().await;
+    let response = client.get("/docs/json").dispatch().await;
     assert_eq!(Status::Ok, response.status());
     let document: Value = response.into_json().await.unwrap();
     assert_eq!("3.1.0", document["openapi"]);
@@ -249,7 +249,7 @@ async fn docs_serve_the_generated_api_and_embedded_swagger_ui() {
             }
         }
     }
-    let response = client.get("/api/v1/capabilities").dispatch().await;
+    let response = client.get("/capabilities").dispatch().await;
     let capabilities: Value = response.into_json().await.unwrap();
     serde_json::from_value::<super::openapi::Capabilities>(capabilities).unwrap();
     let submitted = upload(&client, json!({})).await;
@@ -263,7 +263,7 @@ async fn docs_serve_the_generated_api_and_embedded_swagger_ui() {
 async fn reprocessing_requires_an_explicit_kind() {
     let (client, service, _directory) = client().await;
     let response = client
-        .post(format!("/api/v1/media/{}/tasks", datalith_core::Uuid::new_v4()))
+        .post(format!("/media/{}/tasks", datalith_core::Uuid::new_v4()))
         .header(ContentType::JSON)
         .body("{}")
         .dispatch()
@@ -283,7 +283,7 @@ async fn automatic_uploads_use_content_and_validate_enabled_settings() {
         (b"Hello world!".as_slice(), "resource"),
     ] {
         let response = client
-            .post("/api/v1/uploads")
+            .post("/uploads")
             .header(multipart_header())
             .body(multipart(bytes, Some(json!({"enable_convert_to_image": true}))))
             .dispatch()
@@ -296,7 +296,7 @@ async fn automatic_uploads_use_content_and_validate_enabled_settings() {
         assert_eq!(kind, media["kind"]);
         if kind == "image" {
             let response = client
-                .post(format!("/api/v1/media/{}/tasks", media["id"].as_str().unwrap()))
+                .post(format!("/media/{}/tasks", media["id"].as_str().unwrap()))
                 .header(ContentType::JSON)
                 .body(r#"{"kind":"image"}"#)
                 .dispatch()
@@ -307,7 +307,7 @@ async fn automatic_uploads_use_content_and_validate_enabled_settings() {
         }
     }
     let response = client
-        .post("/api/v1/uploads")
+        .post("/uploads")
         .header(multipart_header())
         .body(multipart(b"unused", Some(json!({"kind":"image", "enable_convert_to_image":true}))))
         .dispatch()
@@ -321,13 +321,13 @@ async fn head_does_not_consume_single_use_content() {
     let (client, service, _directory) = client().await;
     upload(&client, json!({"retention": {"single_use": true, "expires_in_seconds": 60}})).await;
     let id = media_id(&client).await;
-    let path = format!("/api/v1/media/{id}/content");
+    let path = format!("/media/{id}/content");
     let response = client.head(&path).header(Header::new("If-None-Match", "*")).dispatch().await;
     assert_eq!(Status::Ok, response.status());
     assert_eq!(None, response.headers().get_one("ETag"));
     drop(response);
 
-    let response = client.get(format!("/api/v1/media/{id}")).dispatch().await;
+    let response = client.get(format!("/media/{id}")).dispatch().await;
     assert_eq!(Status::Ok, response.status());
     drop(response);
     let response = client
@@ -353,7 +353,7 @@ async fn idempotent_upload_and_archive_round_trip() {
     let mut task_id = None;
     for _ in 0..2 {
         let response = source
-            .post("/api/v1/uploads")
+            .post("/uploads")
             .header(multipart_header())
             .header(Header::new("Idempotency-Key", "upload-test"))
             .body(body.clone())
@@ -367,17 +367,16 @@ async fn idempotent_upload_and_archive_round_trip() {
         task_id = Some(task.id);
     }
     let id = media_id(&source).await;
-    let response =
-        source.post("/api/v1/exports").header(ContentType::JSON).body("{}").dispatch().await;
+    let response = source.post("/exports").header(ContentType::JSON).body("{}").dispatch().await;
     assert_eq!(Status::Accepted, response.status());
     let task = wait_task(&source, response.into_json().await.unwrap()).await;
-    let response = source.get(format!("/api/v1/tasks/{}/artifact", task.id)).dispatch().await;
+    let response = source.get(format!("/tasks/{}/artifact", task.id)).dispatch().await;
     assert_eq!(Status::Ok, response.status());
     let archive = response.into_bytes().await.unwrap();
 
     let (target, target_service, _target_directory) = client().await;
     let response = target
-        .post("/api/v1/imports")
+        .post("/imports")
         .header(multipart_header())
         .body(multipart(&archive, None))
         .dispatch()
@@ -385,7 +384,7 @@ async fn idempotent_upload_and_archive_round_trip() {
     assert_eq!(Status::Accepted, response.status());
     wait_task(&target, response.into_json().await.unwrap()).await;
     assert_eq!(id, media_id(&target).await);
-    let response = target.get(format!("/api/v1/media/{id}/content")).dispatch().await;
+    let response = target.get(format!("/media/{id}/content")).dispatch().await;
     assert_eq!(Status::Ok, response.status());
     assert_eq!("Hello world!", response.into_string().await.unwrap());
     source_service.close().await.unwrap();
@@ -397,7 +396,7 @@ async fn exports_accept_the_largest_id_list() {
     let (client, service, _directory) = client().await;
     let ids: Vec<_> = (0..100_000).map(|_| datalith_core::Uuid::new_v4()).collect();
     let response = client
-        .post("/api/v1/exports")
+        .post("/exports")
         .header(ContentType::JSON)
         .body(json!({ "ids": ids }).to_string())
         .dispatch()

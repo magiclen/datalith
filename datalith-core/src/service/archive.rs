@@ -227,7 +227,7 @@ impl DatalithService {
             file_name: format!("datalith-{task_id}.tar"),
         };
         Ok(
-            json!({"artifact_path": format!("api/v1/tasks/{task_id}/artifact"), "media_count": media_count, "artifact": artifact}),
+            json!({"artifact_path": format!("tasks/{task_id}/artifact"), "media_count": media_count, "artifact": artifact}),
         )
     }
 
@@ -750,20 +750,19 @@ fn refresh_paths(media: &mut Media) {
     if let Some(audio) = &mut media.audio {
         for variant in &mut audio.variants {
             variant.content_path = format!(
-                "api/v1/media/{}/content?format={}",
+                "media/{}/content?format={}",
                 media.id,
                 if variant.codec == "flac" { "flac" } else { "m4a" }
             );
         }
     }
     if let Some(video) = &mut media.video {
-        video.master_path = format!("api/v1/media/{}/hls/master.m3u8", media.id);
+        video.master_path = format!("media/{}/hls/master.m3u8", media.id);
         for variant in &mut video.variants {
-            variant.playlist_path =
-                format!("api/v1/media/{}/hls/{}/index.m3u8", media.id, variant.id);
+            variant.playlist_path = format!("media/{}/hls/{}/index.m3u8", media.id, variant.id);
         }
         for audio in &mut video.audio {
-            audio.content_path = format!("api/v1/media/{}/hls/{}/index.m3u8", media.id, audio.id);
+            audio.content_path = format!("media/{}/hls/{}/index.m3u8", media.id, audio.id);
         }
     }
 }

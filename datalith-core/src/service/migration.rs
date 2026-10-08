@@ -269,7 +269,7 @@ pub(super) fn timestamp(value: i64) -> Result<DateTime<Utc>, ServiceError> {
 }
 
 pub(super) fn content_path(id: Uuid, name: &str, multiplier: u8, format: &str) -> String {
-    format!("api/v1/media/{id}/content?variant={name}&multiplier={multiplier}&format={format}")
+    format!("media/{id}/content?variant={name}&multiplier={multiplier}&format={format}")
 }
 
 pub(super) async fn insert_media(

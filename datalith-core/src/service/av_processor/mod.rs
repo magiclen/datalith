@@ -55,7 +55,7 @@ impl EncodedAudio {
             },
             processing_method: self.method,
             file:              None,
-            content_path:      format!("api/v1/media/{id}/hls/{}/index.m3u8", self.id),
+            content_path:      format!("media/{id}/hls/{}/index.m3u8", self.id),
         }
     }
 }
@@ -539,7 +539,7 @@ impl Pipeline<'_> {
             } else {
                 ProcessingMethod::Transcoded
             },
-            playlist_path:        format!("api/v1/media/{}/hls/{id}/index.m3u8", self.task),
+            playlist_path:        format!("media/{}/hls/{id}/index.m3u8", self.task),
             audio:                Vec::new(),
         };
         Ok((summary, track))
@@ -723,7 +723,7 @@ pub(super) async fn process(
             .await?;
             let mut summary = audio.summary(task);
             summary.file = Some(file.metadata.clone());
-            summary.content_path = format!("api/v1/media/{task}/content?format={format}");
+            summary.content_path = format!("media/{task}/content?format={format}");
             variants.push(summary);
             prepared.insert(file.metadata.id, file);
         }
@@ -841,7 +841,7 @@ pub(super) async fn process(
             duration_seconds: presentation_duration,
             variants:         summaries,
             audio:            audio_summaries,
-            master_path:      format!("api/v1/media/{task}/hls/master.m3u8"),
+            master_path:      format!("media/{task}/hls/master.m3u8"),
         }),
         inventory: Some(HlsInventory {
             presentation_start: ((epoch + start - origin) * 120_000.0).round() as i64,

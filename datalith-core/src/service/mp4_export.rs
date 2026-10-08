@@ -328,7 +328,7 @@ impl DatalithService {
             variant: work.options.variant,
             audio: work.audio,
             artifact: file.metadata,
-            artifact_path: format!("api/v1/tasks/{id}/artifact"),
+            artifact_path: format!("tasks/{id}/artifact"),
             expires_at,
         })?;
         let mut tx = self.0.datalith.0.db.begin_with("BEGIN IMMEDIATE").await?;
