@@ -226,9 +226,6 @@ impl DatalithService {
     }
 
     pub(super) async fn collect_garbage(&self) -> Result<(), ServiceError> {
-        let Ok(_gate) = self.0.writes.try_read() else {
-            return Ok(());
-        };
         // `UNION` lets each part use its own index; `OR` would scan the whole table.
         let ids: Vec<Uuid> = sqlx::query_scalar(
             "SELECT id FROM media WHERE expires_at <= ? UNION SELECT m.id FROM media m WHERE \
@@ -240,7 +237,10 @@ impl DatalithService {
         .fetch_all(&self.0.datalith.0.db)
         .await?;
         for id in ids {
-            // Lock for each deletion so that other requests can run between them.
+            // Take the gate and lock for each deletion, so that other requests and a waiting export can run between them.
+            let Ok(_gate) = self.0.writes.try_read() else {
+                break;
+            };
             let _mutation = self.0.mutations.lock().await;
             let eligible = sqlx::query(
                 "SELECT 1 FROM media m WHERE id=? AND (expires_at<=? OR (consumed_at IS NOT NULL \

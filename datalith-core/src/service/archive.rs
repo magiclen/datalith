@@ -99,15 +99,40 @@ impl DatalithService {
         if requested.as_ref().is_some_and(|ids| ids.len() != rows.len()) {
             return Err(ServiceError::NotFound);
         }
+        // The stored JSON is serialized like the manifest, so stop as soon as it cannot fit, before writes are paused any longer.
+        let mut manifest_size = 0;
+        let mut add_manifest_size = |size: usize| {
+            manifest_size += size as u64;
+            if manifest_size > MAX_MANIFEST_SIZE { Err(manifest_too_large()) } else { Ok(()) }
+        };
         let mut media = Vec::with_capacity(rows.len());
         for row in rows {
-            media.push(serde_json::from_str::<Media>(row.try_get("metadata")?)?);
+            let metadata: &str = row.try_get("metadata")?;
+            add_manifest_size(metadata.len())?;
+            media.push(serde_json::from_str::<Media>(metadata)?);
         }
         media.sort_unstable_by_key(|item| item.id);
+        let videos: Vec<_> =
+            media.iter().filter(|item| item.video.is_some()).map(|item| item.id).collect();
         let mut hls = BTreeMap::new();
-        for item in &media {
-            if item.video.is_some() {
-                hls.insert(item.id, self.hls_inventory(item.id).await?);
+        for ids in videos.chunks(QUERY_BATCH_SIZE) {
+            check_cancelled(cancel)?;
+            let mut query = QueryBuilder::<Sqlite>::new(
+                "SELECT media_id, inventory FROM media_hls WHERE media_id IN (",
+            );
+            let mut values = query.separated(",");
+            for id in ids {
+                values.push_bind(*id);
+            }
+            values.push_unseparated(")");
+            let inventories: Vec<(Uuid, String)> =
+                query.build_query_as().fetch_all(&self.0.datalith.0.db).await?;
+            if inventories.len() != ids.len() {
+                return Err(ServiceError::NotFound);
+            }
+            for (id, inventory) in inventories {
+                add_manifest_size(inventory.len())?;
+                hls.insert(id, serde_json::from_str::<HlsInventory>(&inventory)?);
             }
         }
         let mut contents = BTreeMap::<String, (u64, PathBuf)>::new();
@@ -370,6 +395,10 @@ fn archive_error(message: &str) -> ServiceError {
     ServiceError::Invalid(message.into())
 }
 
+fn manifest_too_large() -> ServiceError {
+    archive_error("archive manifest exceeds 64 MiB; export smaller groups")
+}
+
 fn append_header<W: Write>(
     builder: &mut tar::Builder<W>,
     path: &str,
@@ -394,7 +423,7 @@ fn write_archive(
     interruption.check()?;
     let manifest = serde_json::to_vec(&manifest)?;
     if manifest.len() as u64 > MAX_MANIFEST_SIZE {
-        return Err(archive_error("archive manifest exceeds 64 MiB; export smaller groups"));
+        return Err(manifest_too_large());
     }
     let mut output = tempfile::NamedTempFile::new_in(directory)?;
     // tar copies with an 8 KiB buffer, so buffer both files to avoid tiny system calls.
