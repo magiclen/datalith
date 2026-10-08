@@ -205,6 +205,7 @@ Set `processing_mode: "trust"` inside the image, audio, or video options to reus
 Datalith still checks each output and converts anything that does not meet its requirements.
 A matching MP4 is packaged into HLS, and an image still needs WebP.
 A reused image keeps its color profile, which color-managed browsers apply; converted outputs use sRGB.
+Reused files also keep their embedded metadata, such as EXIF location data; use the default transcode mode to remove it.
 
 ## Get files and play media
 
@@ -278,7 +279,7 @@ Use error codes rather than message text when an application handles errors.
 Native builds need Linux, Rust 1.94 or later, libmagic development files, and ImageMagick 7.1.1 or later below 7.2.
 Image builds also need pkg-config and Clang.
 ImageMagick must have the `lcms` delegate, because image outputs convert embedded color profiles, such as Display P3, to sRGB; the service does not start without it.
-ImageMagick should also have the `heic`, `jxl`, `jp2`, `openexr`, `raw`, and `djvu` delegates for those formats; uploads of a format without its delegate fail.
+ImageMagick should also have the `heic`, `jxl`, `jp2`, `openexr`, `raw`, and `djvu` delegates for those formats; an image upload of a format without its delegate fails, and an automatic upload keeps it as a resource.
 Docker builds ImageMagick without librsvg and graphviz, because Datalith renders SVG itself and graphviz can read other files.
 LibRaw and DjVuLibre allocate memory outside the ImageMagick limits, so set a memory limit for the container when untrusted users can upload files.
 Audio/video processing needs external FFmpeg and ffprobe version 9 or later.

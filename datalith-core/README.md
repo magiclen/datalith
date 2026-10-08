@@ -111,6 +111,7 @@ The [service guide](../datalith/README.md#temporary-media) explains these lifeti
 Images keep the original by default, while audio and video do not.
 Set `save_original` to keep a source for later processing.
 `ProcessingMode::Trust` reuses content that meets each output's requirements; the default encodes it again.
+Reused files keep their embedded metadata, such as EXIF location data.
 `ProcessingMethod` reports how an output was made.
 
 `ServiceConfig` controls upload size, workers, image limits, and retention periods.

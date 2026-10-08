@@ -193,9 +193,7 @@ impl DatalithService {
     pub async fn delete_media(&self, id: Uuid) -> Result<bool, ServiceError> {
         let _gate = self.0.writes.try_read().map_err(|_| ServiceError::Busy)?;
         let _mutation = self.0.mutations.lock().await;
-        let result = self.delete_media_inner(id).await?;
-        self.0.wakeup.notify_one();
-        Ok(result)
+        self.delete_media_inner(id).await
     }
 
     async fn delete_media_inner(&self, id: Uuid) -> Result<bool, ServiceError> {

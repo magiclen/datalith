@@ -132,8 +132,7 @@ impl Datalith {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 fs::create_dir_all(environment_path_ref).await?;
 
-                // The directory was just created, so this path should exist.
-                fs::canonicalize(environment_path_ref).await.unwrap()
+                fs::canonicalize(environment_path_ref).await?
             },
             Err(error) => return Err(error.into()),
         };

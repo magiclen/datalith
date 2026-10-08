@@ -83,6 +83,7 @@ pub enum ProcessingMode {
     #[default]
     Transcode,
     /// Reuse content when its metadata and packets meet the output requirements.
+    /// Reused files keep their embedded metadata, such as EXIF location data.
     Trust,
 }
 
