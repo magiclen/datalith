@@ -220,6 +220,8 @@ It copies the stored streams into MP4 without encoding again and selects the bes
 A FLAC MP4 needs a compatible player.
 After the task succeeds, use its returned artifact path to download it before expiry.
 
+HLS master and track playlists have a strong ETag for their exact bytes. GET and HEAD accept `If-None-Match` after authorization; session-authorized and expiring playlists still use `Cache-Control: no-store`.
+
 ## Temporary media
 
 Set `retention.expires_in_seconds` to remove media after a chosen time, starting when processing finishes.
@@ -230,6 +232,7 @@ Set `retention.single_use` for one access claim.
 For resources and images, the first content GET claims the download; an interrupted download does not restore it.
 For audio and video, read the metadata first, then claim a playback session with `POST /media/MEDIA_ID/playback-sessions`.
 Pass its `token` as `session=TOKEN` to protected content, HLS, and MP4 requests.
+After claiming, ordinary metadata reads and lists hide the media; use `GET /media/MEDIA_ID?session=TOKEN` to read it with the active playback credential.
 The session allows seeking and replay until expiry; it is one claim, not one viewing.
 Use an `Idempotency-Key` for the claim so a retry can recover the same token.
 

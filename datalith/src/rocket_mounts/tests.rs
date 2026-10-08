@@ -203,6 +203,33 @@ async fn docs_serve_the_generated_api_and_embedded_swagger_ui() {
             .any(|kind| kind == "upload")
     );
     assert_eq!("getOpenApi", document["paths"]["/docs/json"]["get"]["operationId"]);
+
+    assert!(
+        document["paths"]["/media/{id}"]["get"]["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|parameter| parameter["name"] == "session")
+    );
+    for (path, operation) in [
+        ("/media/{id}/hls/master.m3u8", "get"),
+        ("/media/{id}/hls/master.m3u8", "head"),
+        ("/media/{id}/hls/{track}/index.m3u8", "get"),
+        ("/media/{id}/hls/{track}/index.m3u8", "head"),
+    ] {
+        assert!(
+            document["paths"][path][operation]["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|parameter| parameter["name"] == "If-None-Match")
+        );
+        assert!(document["paths"][path][operation]["responses"]["304"].is_object());
+        assert!(
+            document["paths"][path][operation]["responses"]["200"]["headers"]["ETag"].is_object()
+        );
+    }
+
     assert!(
         document["components"]["schemas"]["ProcessOptions"]["required"]
             .as_array()
@@ -404,5 +431,121 @@ async fn exports_accept_the_largest_id_list() {
     assert_eq!(Status::Accepted, response.status());
     let task: Task = response.into_json().await.unwrap();
     assert_eq!("export", task.kind);
+    service.close().await.unwrap();
+}
+
+#[cfg(feature = "av-convert")]
+#[rocket::async_test]
+async fn playback_metadata_and_playlist_cache_conditions() {
+    let (client, service, directory) = client().await;
+    let source = directory.path().join("source.mp4");
+    let output = tokio::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:size=256x144:rate=12:duration=1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-threads",
+            "1",
+        ])
+        .arg(&source)
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let bytes = tokio::fs::read(&source).await.unwrap();
+    let response = client
+        .post("/uploads")
+        .header(multipart_header())
+        .body(multipart(
+            &bytes,
+            Some(json!({
+                "kind": "video",
+                "video": {"variants": [{"resolution":144, "fps":12}]},
+                "retention": {"single_use":true}
+            })),
+        ))
+        .dispatch()
+        .await;
+    assert_eq!(Status::Accepted, response.status());
+    let task = wait_task(&client, response.into_json().await.unwrap()).await;
+    let media = task.result.unwrap();
+    let id = media["id"].as_str().unwrap();
+    let metadata_path = format!("/media/{id}");
+    let response = client.get(&metadata_path).dispatch().await;
+    assert_eq!(Status::Ok, response.status());
+    drop(response);
+    let response = client
+        .post(format!("/media/{id}/playback-sessions"))
+        .header(Header::new("Idempotency-Key", "metadata-playback"))
+        .dispatch()
+        .await;
+    assert_eq!(Status::Created, response.status());
+    let session: Value = response.into_json().await.unwrap();
+    let token = session["token"].as_str().unwrap();
+    let response = client.get(&metadata_path).dispatch().await;
+    assert_eq!(Status::NotFound, response.status());
+    drop(response);
+    let response = client.get(format!("{metadata_path}?session={token}")).dispatch().await;
+    assert_eq!(Status::Ok, response.status());
+    assert_eq!(Some("no-store"), response.headers().get_one("Cache-Control"));
+    let claimed: Value = response.into_json().await.unwrap();
+    assert!(claimed["consumed_at"].is_string());
+    let response = client.get("/media").dispatch().await;
+    let page: Value = response.into_json().await.unwrap();
+    assert_eq!("0", page["total"]);
+    let track = media["video"]["variants"][0]["id"].as_str().unwrap();
+    for path in
+        [format!("/media/{id}/hls/master.m3u8"), format!("/media/{id}/hls/{track}/index.m3u8")]
+    {
+        let authorized = format!("{path}?session={token}");
+        let response = client.get(&authorized).dispatch().await;
+        assert_eq!(Status::Ok, response.status());
+        assert_eq!(Some("no-store"), response.headers().get_one("Cache-Control"));
+        let etag = response.headers().get_one("ETag").unwrap().to_owned();
+        let body = response.into_string().await.unwrap();
+        assert_eq!(66, etag.len());
+        assert!(body.contains(token));
+        let response = client.head(&authorized).dispatch().await;
+        assert_eq!(Status::Ok, response.status());
+        assert_eq!(Some(etag.as_str()), response.headers().get_one("ETag"));
+        assert_eq!(Some(body.len()), response.body().preset_size());
+        assert_eq!("", response.into_string().await.unwrap_or_default());
+        let response = client
+            .get(&authorized)
+            .header(Header::new("If-None-Match", format!("W/{etag}")))
+            .dispatch()
+            .await;
+        assert_eq!(Status::NotModified, response.status());
+        assert_eq!("", response.into_string().await.unwrap_or_default());
+        let response =
+            client.head(&authorized).header(Header::new("If-None-Match", etag)).dispatch().await;
+        assert_eq!(Status::NotModified, response.status());
+        drop(response);
+        let response = client
+            .get(format!("{path}?session={}", "0".repeat(64)))
+            .header(Header::new("If-None-Match", "*"))
+            .dispatch()
+            .await;
+        assert_eq!(Status::NotFound, response.status());
+        drop(response);
+        let response = client.get(&path).header(Header::new("If-None-Match", "*")).dispatch().await;
+        assert_eq!(Status::NotFound, response.status());
+        drop(response);
+    }
+    let response = client.delete(&metadata_path).dispatch().await;
+    assert_eq!(Status::NoContent, response.status());
+    drop(response);
+    let response = client.get(format!("{metadata_path}?session={token}")).dispatch().await;
+    assert_eq!(Status::NotFound, response.status());
+    drop(response);
     service.close().await.unwrap();
 }

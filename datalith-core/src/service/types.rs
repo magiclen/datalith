@@ -829,6 +829,15 @@ pub struct HlsPlaylist {
     pub temporary: bool,
 }
 
+impl HlsPlaylist {
+    /// Get a strong ETag for the exact playlist bytes.
+    pub fn etag(&self) -> String {
+        use sha2::{Digest, Sha256};
+
+        format!("\"{}\"", hex::encode(Sha256::digest(self.body.as_bytes())))
+    }
+}
+
 /// Select an initialization file or one media segment.
 #[derive(Debug, Clone, Copy)]
 pub enum HlsAsset {

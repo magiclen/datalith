@@ -43,6 +43,22 @@ impl DatalithService {
         .transpose()
     }
 
+    /// Read metadata with an optional single-use playback credential.
+    pub async fn get_media_with_session(
+        &self,
+        id: Uuid,
+        session: Option<&str>,
+    ) -> Result<Option<Media>, ServiceError> {
+        let Some(token) = session else {
+            return self.get_media(id).await;
+        };
+        match self.authorize_media(id, Some(token)).await {
+            Ok(media) => Ok(Some(media)),
+            Err(ServiceError::NotFound) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// List media items, newest first.
     /// `page` starts from 1, and `per_page` must be from 1 to 100.
     pub async fn list_media(&self, page: u64, per_page: u64) -> Result<Page<Media>, ServiceError> {

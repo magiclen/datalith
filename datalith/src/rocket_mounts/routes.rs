@@ -296,20 +296,23 @@ pub(super) async fn media_list(
     path = "/media/{id}",
     operation_id = "getMedia",
     summary = "Read metadata without using a single-use download claim",
+    description = "Read metadata before claiming playback, or pass the valid playback session to read claimed single-use audio/video metadata. Requests without a session keep hiding consumed media.",
     tag = "Media",
     params(
-        ("id" = datalith_core::Uuid, Path)
+        ("id" = datalith_core::Uuid, Path),
+        ("session" = Option<String>, Query, description = "An active playback session for claimed single-use audio/video metadata.")
     ),
     responses(
         (status = 200, description = "Read metadata without using a single-use download claim", body = datalith_core::Media, content_type = "application/json")
     )
 )]
-#[get("/media/<id>")]
+#[get("/media/<id>?<session>")]
 pub(super) async fn media(
     service: &State<DatalithService>,
     id: Uuid,
+    session: Option<&str>,
 ) -> Result<Json<Media>, ApiError> {
-    Ok(Json(service.get_media(id).await?.ok_or(ServiceError::NotFound)?))
+    Ok(Json(service.get_media_with_session(id, session).await?.ok_or(ServiceError::NotFound)?))
 }
 
 #[utoipa::path(

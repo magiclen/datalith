@@ -173,6 +173,15 @@ fn parse_position(value: &str) -> Option<u64> {
     Some(value.parse().unwrap_or(u64::MAX))
 }
 
+fn etag_matches(value: Option<&str>, etag: &str) -> bool {
+    value.is_some_and(|value| {
+        value.split(',').any(|candidate| {
+            let candidate = candidate.trim();
+            candidate == "*" || candidate.strip_prefix("W/").unwrap_or(candidate) == etag
+        })
+    })
+}
+
 async fn response(
     mut content: Content,
     headers: DownloadHeaders,
@@ -214,12 +223,7 @@ async fn response(
     let mut length = size;
     if content.repeatable {
         response.raw_header("ETag", etag.clone()).raw_header("Accept-Ranges", "bytes");
-        if headers.if_none_match.as_deref().is_some_and(|value| {
-            value.split(',').any(|candidate| {
-                let candidate = candidate.trim();
-                candidate == "*" || candidate.strip_prefix("W/").unwrap_or(candidate) == etag
-            })
-        }) {
+        if etag_matches(headers.if_none_match.as_deref(), &etag) {
             response.status(Status::NotModified);
             return Ok(ContentResponse(response.finalize()));
         }
@@ -418,17 +422,23 @@ pub(super) async fn head_artifact(
     response(service.open_artifact_with_session(id, session).await?, headers, true, true).await
 }
 
-fn playlist_response(playlist: HlsPlaylist) -> ContentResponse {
+fn playlist_response(playlist: HlsPlaylist, headers: DownloadHeaders) -> ContentResponse {
+    let etag = playlist.etag();
     let bytes = playlist.body.into_bytes();
     let mut response = Response::build();
     response
+        .raw_header("ETag", etag.clone())
         .raw_header("Content-Type", "application/vnd.apple.mpegurl")
         .raw_header("X-Content-Type-Options", "nosniff")
         .raw_header(
             "Cache-Control",
             if playlist.temporary { "no-store" } else { "public, max-age=0, must-revalidate" },
         );
-    response.sized_body(bytes.len(), std::io::Cursor::new(bytes));
+    if etag_matches(headers.if_none_match.as_deref(), &etag) {
+        response.status(Status::NotModified);
+    } else {
+        response.sized_body(bytes.len(), std::io::Cursor::new(bytes));
+    }
     ContentResponse(response.finalize())
 }
 
@@ -450,11 +460,13 @@ fn audio_filter(audio: Option<&str>) -> Result<HlsAudioFilter, ApiError> {
     description = "Return allowed video/audio combinations with measured bandwidth values. Default AAC combinations support broad playback; clients must check FLAC support before selecting it. Video and audio combinations reuse stored tracks. Playlist child requests retain the session credential when required. Child URLs are relative to the master, such as aac_low/index.m3u8. Only authorized single-use media append the session token; ordinary playlists do not echo supplied tokens.",
     params(
         ("id" = datalith_core::Uuid, Path),
+        ("If-None-Match" = Option<String>, Header, description = "Compare the exact playlist representation after authorization."),
         ("audio" = Option<super::openapi::HlsAudio>, Query, example = "aac"),
         ("session" = Option<String>, Query, description = "Required for single-use audio/video. Ordinary media need no token.")
     ),
     responses(
-        (status = 200, description = "HLS VOD playlist.", body = String, content_type = "application/vnd.apple.mpegurl", headers(("Cache-Control" = String, description = "Session-authorized or expiring media use no-store.")))
+        (status = 304, description = "The authorized playlist matches the cache condition.", headers(("ETag" = String, description = "Strong SHA-256 ETag."), ("Cache-Control" = String, description = "Session-authorized or expiring playlists use no-store."))),
+        (status = 200, description = "HLS VOD playlist.", body = String, content_type = "application/vnd.apple.mpegurl", headers(("ETag" = String, description = "Strong SHA-256 ETag for the playlist."), ("Cache-Control" = String, description = "Session-authorized or expiring media use no-store.")))
     )
 )]
 #[get("/media/<id>/hls/master.m3u8?<audio>&<session>")]
@@ -463,8 +475,9 @@ pub(super) async fn hls_master(
     id: Uuid,
     audio: Option<&str>,
     session: Option<&str>,
+    headers: DownloadHeaders,
 ) -> Result<ContentResponse, ApiError> {
-    Ok(playlist_response(service.hls_master(id, audio_filter(audio)?, session).await?))
+    Ok(playlist_response(service.hls_master(id, audio_filter(audio)?, session).await?, headers))
 }
 
 #[utoipa::path(
@@ -476,11 +489,13 @@ pub(super) async fn hls_master(
     description = "Return allowed video/audio combinations with measured bandwidth values. Default AAC combinations support broad playback; clients must check FLAC support before selecting it. Video and audio combinations reuse stored tracks. Playlist child requests retain the session credential when required. Child URLs are relative to the master, such as aac_low/index.m3u8. Only authorized single-use media append the session token; ordinary playlists do not echo supplied tokens.",
     params(
         ("id" = datalith_core::Uuid, Path),
+        ("If-None-Match" = Option<String>, Header, description = "Compare the exact playlist representation after authorization."),
         ("audio" = Option<super::openapi::HlsAudio>, Query, example = "aac"),
         ("session" = Option<String>, Query, description = "Required for single-use audio/video. Ordinary media need no token.")
     ),
     responses(
-        (status = 200, description = "HLS VOD playlist.", headers(("Cache-Control" = String, description = "Session-authorized or expiring media use no-store.")))
+        (status = 304, description = "The authorized playlist matches the cache condition.", headers(("ETag" = String, description = "Strong SHA-256 ETag."), ("Cache-Control" = String, description = "Session-authorized or expiring playlists use no-store."))),
+        (status = 200, description = "HLS VOD playlist.", headers(("ETag" = String, description = "Strong SHA-256 ETag for the playlist."), ("Cache-Control" = String, description = "Session-authorized or expiring media use no-store.")))
     )
 )]
 #[head("/media/<id>/hls/master.m3u8?<audio>&<session>")]
@@ -489,8 +504,9 @@ pub(super) async fn head_hls_master(
     id: Uuid,
     audio: Option<&str>,
     session: Option<&str>,
+    headers: DownloadHeaders,
 ) -> Result<ContentResponse, ApiError> {
-    hls_master(service, id, audio, session).await
+    hls_master(service, id, audio, session, headers).await
 }
 
 #[utoipa::path(
@@ -502,11 +518,13 @@ pub(super) async fn head_hls_master(
     description = "Read a video or shared audio track playlist. Child URLs are relative to this track, such as init.mp4 and segment-000000.m4s. Protected playlists append the same authorized session token to child URLs. Existing HLS remains readable without av-convert or processing tools.",
     params(
         ("id" = datalith_core::Uuid, Path),
+        ("If-None-Match" = Option<String>, Header, description = "Compare the exact playlist representation after authorization."),
         ("track" = String, Path, description = "An identifier from the video variants or shared audio summary."),
         ("session" = Option<String>, Query, description = "Required for single-use audio/video. Ordinary media need no token.")
     ),
     responses(
-        (status = 200, description = "HLS VOD playlist.", body = String, content_type = "application/vnd.apple.mpegurl", headers(("Cache-Control" = String, description = "Session-authorized or expiring media use no-store.")))
+        (status = 304, description = "The authorized playlist matches the cache condition.", headers(("ETag" = String, description = "Strong SHA-256 ETag."), ("Cache-Control" = String, description = "Session-authorized or expiring playlists use no-store."))),
+        (status = 200, description = "HLS VOD playlist.", body = String, content_type = "application/vnd.apple.mpegurl", headers(("ETag" = String, description = "Strong SHA-256 ETag for the playlist."), ("Cache-Control" = String, description = "Session-authorized or expiring media use no-store.")))
     )
 )]
 #[get("/media/<id>/hls/<track>/index.m3u8?<session>")]
@@ -515,8 +533,9 @@ pub(super) async fn hls_track(
     id: Uuid,
     track: &str,
     session: Option<&str>,
+    headers: DownloadHeaders,
 ) -> Result<ContentResponse, ApiError> {
-    Ok(playlist_response(service.hls_track(id, track, session).await?))
+    Ok(playlist_response(service.hls_track(id, track, session).await?, headers))
 }
 
 #[utoipa::path(
@@ -528,11 +547,13 @@ pub(super) async fn hls_track(
     description = "Read a video or shared audio track playlist. Child URLs are relative to this track, such as init.mp4 and segment-000000.m4s. Protected playlists append the same authorized session token to child URLs. Existing HLS remains readable without av-convert or processing tools.",
     params(
         ("id" = datalith_core::Uuid, Path),
+        ("If-None-Match" = Option<String>, Header, description = "Compare the exact playlist representation after authorization."),
         ("track" = String, Path, description = "An identifier from the video variants or shared audio summary."),
         ("session" = Option<String>, Query, description = "Required for single-use audio/video. Ordinary media need no token.")
     ),
     responses(
-        (status = 200, description = "HLS VOD playlist.", headers(("Cache-Control" = String, description = "Session-authorized or expiring media use no-store.")))
+        (status = 304, description = "The authorized playlist matches the cache condition.", headers(("ETag" = String, description = "Strong SHA-256 ETag."), ("Cache-Control" = String, description = "Session-authorized or expiring playlists use no-store."))),
+        (status = 200, description = "HLS VOD playlist.", headers(("ETag" = String, description = "Strong SHA-256 ETag for the playlist."), ("Cache-Control" = String, description = "Session-authorized or expiring media use no-store.")))
     )
 )]
 #[head("/media/<id>/hls/<track>/index.m3u8?<session>")]
@@ -541,8 +562,9 @@ pub(super) async fn head_hls_track(
     id: Uuid,
     track: &str,
     session: Option<&str>,
+    headers: DownloadHeaders,
 ) -> Result<ContentResponse, ApiError> {
-    hls_track(service, id, track, session).await
+    hls_track(service, id, track, session, headers).await
 }
 
 fn asset_kind(name: &str) -> Result<HlsAsset, ApiError> {
