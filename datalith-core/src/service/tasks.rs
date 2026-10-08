@@ -1105,11 +1105,7 @@ impl DatalithService {
         let output = self.work_directory(id).join(format!("output-{}", Uuid::new_v4()));
         fs::create_dir(&output).await?;
         let created_at = Utc::now();
-        let name = options
-            .file_name
-            .clone()
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| id.to_string());
+        let name = media_name(&options, id);
         let mut media = Media {
             id,
             kind: options.kind,
@@ -1155,13 +1151,7 @@ impl DatalithService {
                 media.animated = image.animated;
                 media.frame_count = image.frame_count;
                 mime = image.original_mime;
-                // Each variant file gets its own extension, so drop the one from the original name.
-                // `Path::extension` ignores a trailing `/` or `/.`, so only strip it when the name really ends with it.
-                let stem = std::path::Path::new(&name)
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .and_then(|extension| name.strip_suffix(extension)?.strip_suffix('.'))
-                    .unwrap_or(&name);
+                let stem = file_stem(&name);
                 for variant in image.variants {
                     let file = Self::prepare_file(
                         variant.path,
@@ -1269,6 +1259,22 @@ impl DatalithService {
         drop(guards);
         Ok(result)
     }
+}
+
+// Name the media after the task when the request has no usable name.
+pub(super) fn media_name(options: &UploadOptions, id: Uuid) -> String {
+    options.file_name.clone().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| id.to_string())
+}
+
+// Each output file gets its own extension, so drop the one from the media name.
+// `Path::extension` ignores a trailing `/` or `/.`, so only strip it when the name really ends with it.
+#[cfg(any(feature = "image-convert", feature = "av-convert"))]
+pub(super) fn file_stem(name: &str) -> &str {
+    Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .and_then(|extension| name.strip_suffix(extension)?.strip_suffix('.'))
+        .unwrap_or(name)
 }
 
 pub(super) fn validate_idempotency_key(key: Option<&str>) -> Result<(), ServiceError> {

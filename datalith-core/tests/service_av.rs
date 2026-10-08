@@ -194,6 +194,7 @@ async fn audio_encodes_aac_preserves_integer_samples_and_reports_float_fallback(
     let service = service(&directory.path().join("store")).await;
     let media = upload(&service, &integer, UploadOptions {
         kind: MediaKind::Audio,
+        file_name: Some("integer.wav".into()),
         audio: AudioOptions {
             preserve_lossless: true,
             ..AudioOptions::default()
@@ -207,9 +208,12 @@ async fn audio_encodes_aac_preserves_integer_samples_and_reports_float_fallback(
     let aac = audio.variants.iter().find(|variant| variant.codec == "aac").unwrap();
     assert_eq!(48_000, aac.sample_rate);
     assert_eq!(1, aac.channels);
+    // Output names drop the source extension, like image variants do.
+    assert_eq!(format!("integer-{}.m4a", aac.id), aac.file.as_ref().unwrap().file_name);
     let flac = audio.variants.iter().find(|variant| variant.codec == "flac").unwrap();
     assert_eq!(44_100, flac.sample_rate);
     assert_eq!(Some(16), flac.bits_per_sample);
+    assert_eq!("integer-flac.flac", flac.file.as_ref().unwrap().file_name);
     let mut content = service
         .open_content(
             media.id,

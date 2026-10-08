@@ -710,17 +710,15 @@ pub(super) async fn process(
         if encoded_audio.is_empty() {
             return Err(ServiceError::Invalid("the source has no audio stream".into()));
         }
+        let name = super::tasks::media_name(options, task);
+        let stem = super::tasks::file_stem(&name);
         let mut variants = Vec::new();
         for audio in &mut encoded_audio {
             let format = if audio.codec == "flac" { "flac" } else { "m4a" };
             let file = DatalithService::prepare_file(
                 audio.path.clone(),
                 if format == "flac" { "audio/flac" } else { "audio/mp4" }.into(),
-                format!(
-                    "{}-{}.{format}",
-                    options.file_name.as_deref().unwrap_or("audio"),
-                    audio.id
-                ),
+                format!("{stem}-{}.{format}", audio.id),
             )
             .await?;
             let mut summary = audio.summary(task);
