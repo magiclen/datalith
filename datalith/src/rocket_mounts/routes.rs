@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use datalith_core::{
     DatalithService, ExportOptions, Media, Mp4ExportOptions, Page, PlaybackSession, ProcessOptions,
     ServiceError, Task, UploadOptions, Uuid,
@@ -21,6 +23,25 @@ use serde_json::Value;
 use super::{ApiError, IdempotencyKey, ServerConfig};
 
 type TaskResponse = Result<Accepted<Json<Task>>, ApiError>;
+
+const BUSY_RETRY_DELAY: Duration = Duration::from_millis(100);
+const BUSY_RETRY_LIMIT: u32 = 100;
+
+// The received file is already on disk, so wait for an export snapshot instead of making the client send it again.
+async fn submit_received<F: Future<Output = Result<Task, ServiceError>>>(
+    mut submit: impl FnMut() -> F,
+) -> Result<Task, ServiceError> {
+    let mut retries = 0;
+    loop {
+        match submit().await {
+            Err(ServiceError::Busy) if retries < BUSY_RETRY_LIMIT => {
+                retries += 1;
+                tokio::time::sleep(BUSY_RETRY_DELAY).await;
+            },
+            result => return result,
+        }
+    }
+}
 
 async fn multipart(
     content_type: &ContentType,
@@ -107,7 +128,9 @@ pub(super) async fn upload(
             .filter(|mime| mime.essence_str() != "application/octet-stream")
             .map(ToString::to_string);
     }
-    let task = service.submit_upload_file(&file.path, options, key.0).await?;
+    let task =
+        submit_received(|| service.submit_upload_file(&file.path, options.clone(), key.0.clone()))
+            .await?;
     Ok(Accepted(Json(task)))
 }
 
@@ -140,7 +163,9 @@ pub(super) async fn import(
     if files.len() != 1 {
         return Err(ApiError::invalid("Exactly one file is required."));
     }
-    Ok(Accepted(Json(service.submit_import_file(&files[0].path, key.0).await?)))
+    let task =
+        submit_received(|| service.submit_import_file(&files[0].path, key.0.clone())).await?;
+    Ok(Accepted(Json(task)))
 }
 
 #[utoipa::path(

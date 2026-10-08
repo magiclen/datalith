@@ -30,29 +30,40 @@ async fn run_task(service: &DatalithService, id: Uuid) -> anyhow::Result<Task> {
 }
 
 async fn export(service: &DatalithService, output: &Path, ids: Vec<Uuid>) -> anyhow::Result<()> {
-    let options = ExportOptions {
-        ids: if ids.is_empty() { None } else { Some(ids) }
-    };
-    let submitted = service.submit_export(options, None).await?;
-    let task = run_task(service, submitted.id).await?;
-    let content = service.open_artifact(task.id).await?;
-    let mut source = content.file.into_std().await;
-    let output = output.to_owned();
-    // `std::io::copy` can copy between two files inside the kernel, and it avoids one blocking round trip for every small chunk.
-    tokio::task::spawn_blocking(move || {
-        let mut destination =
-            std::fs::OpenOptions::new().write(true).create_new(true).open(&output)?;
-        let result =
-            std::io::copy(&mut source, &mut destination).and_then(|_| destination.sync_all());
-        drop(destination);
-        if result.is_err() {
-            let _ = std::fs::remove_file(&output);
-        }
-        result
-    })
-    .await??;
-    println!("{}", serde_json::to_string(&task)?);
-    Ok(())
+    // Create the output first, so that an existing file is reported before the export runs.
+    let mut destination = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)
+        .await?
+        .into_std()
+        .await;
+    let result = async {
+        let options = ExportOptions {
+            ids: if ids.is_empty() { None } else { Some(ids) }
+        };
+        let submitted = service.submit_export(options, None).await?;
+        let task = run_task(service, submitted.id).await?;
+        let content = service.open_artifact(task.id).await?;
+        let mut source = content.file.into_std().await;
+        // `std::io::copy` can copy between two files inside the kernel, and it avoids one blocking round trip for every small chunk.
+        tokio::task::spawn_blocking(move || {
+            std::io::copy(&mut source, &mut destination).and_then(|_| destination.sync_all())
+        })
+        .await??;
+        anyhow::Ok(task)
+    }
+    .await;
+    match result {
+        Ok(task) => {
+            println!("{}", serde_json::to_string(&task)?);
+            Ok(())
+        },
+        Err(error) => {
+            let _ = tokio::fs::remove_file(output).await;
+            Err(error)
+        },
+    }
 }
 
 fn main() -> anyhow::Result<()> {

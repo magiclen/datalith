@@ -391,3 +391,19 @@ async fn idempotent_upload_and_archive_round_trip() {
     source_service.close().await.unwrap();
     target_service.close().await.unwrap();
 }
+
+#[rocket::async_test]
+async fn exports_accept_the_largest_id_list() {
+    let (client, service, _directory) = client().await;
+    let ids: Vec<_> = (0..100_000).map(|_| datalith_core::Uuid::new_v4()).collect();
+    let response = client
+        .post("/api/v1/exports")
+        .header(ContentType::JSON)
+        .body(json!({ "ids": ids }).to_string())
+        .dispatch()
+        .await;
+    assert_eq!(Status::Accepted, response.status());
+    let task: Task = response.into_json().await.unwrap();
+    assert_eq!("export", task.kind);
+    service.close().await.unwrap();
+}

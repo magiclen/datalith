@@ -156,7 +156,8 @@ pub fn create(
         .merge(("ident", "Datalith"))
         .merge(("address", address))
         .merge(("port", port))
-        .merge(("limits.json", 1024 * 1024));
+        // Export requests can list 100,000 media IDs.
+        .merge(("limits.json", 4 * 1024 * 1024));
     rocket::custom(figment)
         .manage(ServerConfig {
             max_file_size,
