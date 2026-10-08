@@ -255,6 +255,32 @@ fn explicit_format(
         .or_else(|| (detected_mime == Some("image/x-tga")).then_some("TGA")))
 }
 
+fn image_resource(path: &Path, format: Option<&str>) -> Result<ImageResource, ServiceError> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| ServiceError::Invalid("The image path is not UTF-8.".into()))?;
+    Ok(ImageResource::Path(match format {
+        Some(format) => format!("{format}:{path}"),
+        None => path.to_owned(),
+    }))
+}
+
+/// Check whether ImageMagick can identify an image file, without decoding its pixels.
+/// libmagic also reports formats such as CAD drawings as images, and automatic conversion keeps them as resources.
+pub(crate) fn identifiable(
+    input: &Path,
+    detected_mime: Option<&str>,
+) -> Result<bool, ServiceError> {
+    match reject_ghostscript_formats(input) {
+        Ok(()) => (),
+        Err(ServiceError::Unsupported(_)) => return Ok(false),
+        Err(error) => return Err(error),
+    }
+    configure_resources()?;
+    let input = image_resource(input, explicit_format(input, detected_mime)?)?;
+    Ok(identify_ping(&input).is_ok())
+}
+
 /// Process an image file.
 /// `detected_mime` is the type that libmagic detected for `input`, if any.
 pub(crate) fn process_image(
@@ -271,14 +297,8 @@ pub(crate) fn process_image(
     configure_resources()?;
     let svg = super::svg::render(input, output_dir, limits, cancel)?;
     let source = svg.as_ref().map_or(input, |svg| svg.path.as_path());
-    let path = source
-        .to_str()
-        .ok_or_else(|| ServiceError::Invalid("The image path is not UTF-8.".into()))?;
     let format = if svg.is_some() { None } else { explicit_format(source, detected_mime)? };
-    let input = ImageResource::Path(match format {
-        Some(format) => format!("{format}:{path}"),
-        None => path.to_owned(),
-    });
+    let input = image_resource(source, format)?;
     let ping = identify_ping(&input).map_err(image_error)?;
     // The resource path can start with a format, so read the file itself.
     let preflight_frames =

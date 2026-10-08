@@ -66,19 +66,25 @@ pub(super) fn is_svg(input: &Path) -> Result<bool, ServiceError> {
     }
     let mut header = header.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&header).trim_ascii_start();
     loop {
-        let ending = if header.starts_with(b"<?") {
-            b"?>".as_slice()
-        } else if header.starts_with(b"<!--") {
-            b"-->".as_slice()
-        } else if header.starts_with(b"<!DOCTYPE") {
-            b">".as_slice()
+        let end = if header.starts_with(b"<!DOCTYPE") {
+            doctype_end(header)
         } else {
-            break;
+            let ending = if header.starts_with(b"<?") {
+                b"?>".as_slice()
+            } else if header.starts_with(b"<!--") {
+                b"-->".as_slice()
+            } else {
+                break;
+            };
+            header
+                .windows(ending.len())
+                .position(|part| part == ending)
+                .map(|end| end + ending.len())
         };
-        let Some(end) = header.windows(ending.len()).position(|part| part == ending) else {
+        let Some(end) = end else {
             return Ok(false);
         };
-        header = header[end + ending.len()..].trim_ascii_start();
+        header = header[end..].trim_ascii_start();
     }
     let Some(header) = header.strip_prefix(b"<") else {
         return Ok(false);
@@ -89,6 +95,30 @@ pub(super) fn is_svg(input: &Path) -> Result<bool, ServiceError> {
         return Ok(false);
     };
     Ok(header[..end].rsplit(|byte| *byte == b':').next() == Some(b"svg".as_slice()))
+}
+
+// A document type can contain quoted text and an internal subset with its own tags, so it ends at the first `>` outside them.
+fn doctype_end(data: &[u8]) -> Option<usize> {
+    let mut quote = None;
+    let mut depth = 0usize;
+    data.iter()
+        .position(|&byte| {
+            if let Some(current) = quote {
+                if byte == current {
+                    quote = None;
+                }
+            } else {
+                match byte {
+                    b'\'' | b'"' => quote = Some(byte),
+                    b'[' => depth += 1,
+                    b']' => depth = depth.saturating_sub(1),
+                    b'>' if depth == 0 => return true,
+                    _ => (),
+                }
+            }
+            false
+        })
+        .map(|end| end + 1)
 }
 
 pub(super) fn render(
@@ -290,4 +320,27 @@ fn check_images(
         result?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use super::*;
+
+    #[test]
+    fn svg_detection_skips_a_document_type_with_an_internal_subset() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(
+            br#"<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd" [
+    <!ENTITY ns_extend "http://ns.adobe.com/Extensibility/1.0/">
+    <!ENTITY ns_ai "http://ns.adobe.com/AdobeIllustrator/10.0/">
+]>
+<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>
+"#,
+        )
+        .unwrap();
+        assert!(is_svg(file.path()).unwrap());
+    }
 }

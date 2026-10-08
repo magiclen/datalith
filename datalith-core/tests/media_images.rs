@@ -84,6 +84,8 @@ async fn automatic_images_keep_default_sizes_and_other_files_stay_resources() {
         (svg.as_slice(), MediaKind::Image, false),
         (compressed.as_slice(), MediaKind::Image, false),
         (b"A plain file.".as_slice(), MediaKind::Resource, false),
+        // Text can start with the BMP signature.
+        (b"BMI,Height,Weight\n22.5,170,65\n".as_slice(), MediaKind::Resource, false),
     ]
     .into_iter()
     .enumerate()

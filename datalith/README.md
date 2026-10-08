@@ -108,6 +108,7 @@ curl -F 'file=@./photo.jpg' \
 
 Datalith checks the contents and selects a matching enabled type.
 For example, the same options can process a photo, song, or video, while a PDF stays a resource.
+An image format that ImageMagick cannot identify, such as a CAD drawing, also stays a resource.
 File names and the supplied MIME type do not choose the conversion type.
 Each enabled type must have valid settings and available processing support.
 A matching file that cannot be processed makes the task fail; it is not saved as a resource instead.

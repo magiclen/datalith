@@ -19,19 +19,34 @@ pub(super) async fn detect(
     let mut header = Vec::new();
     File::open(input).await?.take(4096).read_to_end(&mut header).await?;
     let mime = crate::functions::detect_file_type_by_path(input).await;
-    if image_header(&header) || mime.as_ref().is_some_and(|mime| mime.type_() == crate::mime::IMAGE)
-    {
-        return Ok(MediaKind::Image);
-    }
+    let image = image_header(&header)
+        || mime.as_ref().is_some_and(|mime| mime.type_() == crate::mime::IMAGE);
     #[cfg(feature = "image-convert")]
     {
         let input = input.to_path_buf();
-        if tokio::task::spawn_blocking(move || super::svg::is_svg(&input))
-            .await
-            .map_err(|error| ServiceError::Internal(error.to_string()))??
-        {
+        let detected = mime.as_ref().map(|mime| mime.essence_str().to_owned());
+        let convert = options.enable_convert_to_image;
+        let image = tokio::task::spawn_blocking(move || {
+            // resvg renders SVG files, and ImageMagick is not allowed to read them.
+            if detected.as_deref() == Some("image/svg+xml") || super::svg::is_svg(&input)? {
+                return Ok(true);
+            }
+            // Without image conversion, an image only needs to skip the audio and video checks before it is stored as a resource.
+            Ok::<_, ServiceError>(
+                image
+                    && (!convert
+                        || super::image_processor::identifiable(&input, detected.as_deref())?),
+            )
+        })
+        .await
+        .map_err(|error| ServiceError::Internal(error.to_string()))??;
+        if image {
             return Ok(MediaKind::Image);
         }
+    }
+    #[cfg(not(feature = "image-convert"))]
+    if image {
+        return Ok(MediaKind::Image);
     }
     #[cfg(feature = "av-convert")]
     if (options.enable_convert_to_audio || options.enable_convert_to_video)
@@ -53,7 +68,7 @@ fn image_header(header: &[u8]) -> bool {
         || header.starts_with(b"GIF87a")
         || header.starts_with(b"GIF89a")
         || header.starts_with(b"\x8AMNG\r\n\x1A\n")
-        || header.starts_with(b"BM")
+        || bmp_header(header)
         || header.starts_with(b"8BPS")
         || header.starts_with(b"qoif")
         || header.starts_with(b"\x76\x2F\x31\x01")
@@ -65,6 +80,17 @@ fn image_header(header: &[u8]) -> bool {
         || header.starts_with(b"\0\0\0\x0CjP  \r\n\x87\n")
         || (header.starts_with(b"RIFF") && header.get(8..12) == Some(b"WEBP"))
         || heif_format(header).is_some()
+}
+
+// Plain text can also start with `BM`, so check the size of the DIB header that follows, like libmagic does.
+fn bmp_header(header: &[u8]) -> bool {
+    header.starts_with(b"BM")
+        && header.get(14..18).is_some_and(|size| {
+            matches!(
+                u32::from_le_bytes(size.try_into().unwrap()),
+                12 | 16 | 40 | 52 | 56 | 64 | 108 | 124
+            )
+        })
 }
 
 // Return the ImageMagick format of an ICO or CUR file, using the rule of image-convert, which needs a nonzero image count.
