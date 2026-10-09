@@ -36,6 +36,7 @@ Datalith's source license is MIT.
 The included FFmpeg and x264 programs use GPL version 2 or later.
 zimg uses WTFPL version 2, and libwebp uses a BSD license with a separate patent grant.
 License texts are in `/opt/ffmpeg/share/datalith-ffmpeg/licenses`; system package notices remain in the Debian image.
+ImageMagick uses the ImageMagick License, and its license and notice are in `/opt/imagemagick/share/doc/ImageMagick-7`.
 The image libraries come from Debian with their notices in `/usr/share/doc`; DjVuLibre uses GPL version 2 or later, and HEIC decoding uses libde265, which may need HEVC patent licenses in some places.
 
 Every full image includes `/opt/ffmpeg/share/datalith-ffmpeg/ffmpeg-source.tar.xz`.

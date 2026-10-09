@@ -39,7 +39,8 @@ RUN ./configure --prefix=/opt/imagemagick --disable-static --enable-shared --dis
     --enable-hdri --with-quantum-depth=16 --without-perl --without-x \
     --with-webp --with-heic --with-jxl --with-openjp2 --with-lcms --with-openexr --with-raw --with-djvu \
     --without-rsvg --without-gvc \
-    && make -j"$NATIVE_BUILD_JOBS" && make install
+    && make -j"$NATIVE_BUILD_JOBS" && make install \
+    && install -Dm644 LICENSE NOTICE -t /opt/imagemagick/share/doc/ImageMagick-7
 ENV PATH=/opt/imagemagick/bin:$PATH
 ENV PKG_CONFIG_PATH=/opt/imagemagick/lib/pkgconfig
 ENV LD_LIBRARY_PATH=/opt/imagemagick/lib
