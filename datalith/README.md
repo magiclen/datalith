@@ -172,12 +172,14 @@ Use `audio.audio_stream` to select a source audio stream when the default is not
 
 Video conversion needs explicit `video.variants` with resolution and fps pairs; there is no default ladder.
 Available resolution tiers are 144, 240, 360, 432, 480, 540, 576, 720, 900, 1080, 1440, and 2160.
+A tier is the shorter side of the canvas, so 1080 means 1920x1080 or 1080x1920.
 Available fps tiers are 10, 12, 15, 20, 24, 25, 30, 48, 50, and 60.
 Requests are adjusted downward for the source, except sources below 10 fps use 10 fps.
 Duplicate effective versions are combined.
 
-Outputs use H.264, x264 `veryslow`, CRF 23, `yuv420p`, and horizontal canvases with black borders where needed.
-The content keeps its shape and is not enlarged or cropped.
+Outputs use H.264, x264 `veryslow`, CRF 23, and `yuv420p`.
+The canvas follows the source orientation after rotation: portrait sources use a portrait canvas, and square sources use a landscape one.
+The content keeps its shape and is not enlarged or cropped, with black borders where needed.
 HDR and interlaced sources are converted to SDR and progressive video.
 
 HLS stores video and shared audio tracks separately.

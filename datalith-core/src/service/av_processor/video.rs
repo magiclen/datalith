@@ -198,6 +198,7 @@ pub(super) fn renditions(
         })
         .unwrap_or(10);
     let maximum_resolution = source_width.min(source_height);
+    let portrait = source_height > source_width;
     let mut outputs = Vec::<Rendition>::new();
     for requested in &options.variants {
         let (resolution, width, height) = VIDEO_RESOLUTIONS
@@ -207,6 +208,7 @@ pub(super) fn renditions(
                 *tier <= requested.resolution && u32::from(*tier) <= maximum_resolution
             })
             .unwrap_or(VIDEO_RESOLUTIONS[0]);
+        let (width, height) = if portrait { (height, width) } else { (width, height) };
         let fps = requested.fps.min(source_fps);
         if outputs.iter().any(|output| output.resolution == resolution && output.fps == fps) {
             continue;
@@ -360,6 +362,27 @@ mod tests {
             (small[0].resolution, small[0].fps, small[0].width, small[0].height)
         );
         assert!(filters(&small_source, &small[0], 0.0).contains("scale=64:64"));
+    }
+
+    #[test]
+    fn portrait_sources_use_portrait_canvases() {
+        let options = VideoOptions {
+            variants: vec![VideoVariantSpec {
+                resolution: 1080, fps: 30
+            }],
+            ..VideoOptions::default()
+        };
+        let portrait = source(1080, 1920, "30/1");
+        let output = renditions(&options, &portrait, 12_000_000).unwrap();
+        assert_eq!((1080, 1080, 1920), (output[0].resolution, output[0].width, output[0].height));
+        assert!(
+            filters(&portrait, &output[0], 0.0)
+                .contains("scale=1080:1920:flags=lanczos,setsar=1,pad=1080:1920:")
+        );
+        let mut rotated = source(1920, 1080, "30/1");
+        rotated.0["side_data_list"] = serde_json::json!([{"rotation": -90}]);
+        let output = renditions(&options, &rotated, 12_000_000).unwrap();
+        assert_eq!((1080, 1080, 1920), (output[0].resolution, output[0].width, output[0].height));
     }
 
     #[test]

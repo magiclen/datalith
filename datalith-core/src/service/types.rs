@@ -229,7 +229,7 @@ impl AudioOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VideoVariantSpec {
-    /// The horizontal canvas tier, such as 720 or 1080.
+    /// The canvas tier on the shorter side, such as 720 or 1080.
     #[cfg_attr(feature = "openapi", schema(schema_with = super::openapi::video_resolution))]
     pub resolution: u16,
     /// The frame-rate tier, such as 30 or 60.
@@ -456,10 +456,11 @@ pub struct VideoVariant {
     /// The effective resolution tier.
     #[cfg_attr(feature = "openapi", schema(schema_with = super::openapi::video_resolution))]
     pub resolution:           u16,
-    /// The horizontal canvas width in pixels.
+    /// The canvas width in pixels.
+    /// Portrait sources use a portrait canvas.
     #[cfg_attr(feature = "openapi", schema(minimum = 1))]
     pub width:                u32,
-    /// The horizontal canvas height in pixels.
+    /// The canvas height in pixels.
     #[cfg_attr(feature = "openapi", schema(minimum = 1))]
     pub height:               u32,
     /// The effective frame-rate tier.

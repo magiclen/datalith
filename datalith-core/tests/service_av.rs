@@ -846,6 +846,67 @@ async fn video_trust_preserves_compliant_h264_and_mixed_rates_share_a_time_origi
 }
 
 #[tokio::test]
+async fn portrait_video_uses_a_portrait_canvas_and_trust_keeps_compliant_h264() {
+    use datalith_core::HlsAudioFilter;
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source.mp4");
+    fixture(&source, &[
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=144x256:rate=30000/1001:duration=4",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-profile:v",
+        "high",
+        "-level:v",
+        "1.2",
+        "-refs",
+        "4",
+        "-flags",
+        "+cgop",
+        "-x264-params",
+        "open-gop=0:scenecut=0",
+        "-forced-idr",
+        "1",
+        "-force_key_frames",
+        "expr:gte(t,n_forced*2)",
+        "-movflags",
+        "+faststart",
+    ])
+    .await;
+    let service = service(&directory.path().join("store")).await;
+    let media = upload(&service, &source, UploadOptions {
+        kind: MediaKind::Video,
+        video: VideoOptions {
+            processing_mode: ProcessingMode::Trust,
+            variants: vec![
+                VideoVariantSpec {
+                    resolution: 144, fps: 24
+                },
+                VideoVariantSpec {
+                    resolution: 144, fps: 30
+                },
+            ],
+            ..VideoOptions::default()
+        },
+        ..UploadOptions::default()
+    })
+    .await;
+    let video = media.video.as_ref().unwrap();
+    for variant in &video.variants {
+        assert_eq!((144, 144, 256), (variant.resolution, variant.width, variant.height));
+    }
+    assert_eq!(ProcessingMethod::Transcoded, video.variants[0].processing_method);
+    assert_eq!(ProcessingMethod::Remuxed, video.variants[1].processing_method);
+    let master = service.hls_master(media.id, HlsAudioFilter::Aac, None).await.unwrap();
+    assert_eq!(2, master.body.matches("RESOLUTION=144x256,").count());
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn video_trust_reencodes_packets_above_the_declared_h264_level() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("understated-level.mp4");

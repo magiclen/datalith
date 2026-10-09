@@ -9,7 +9,8 @@ use super::{
 };
 use crate::guard::OpenGuard;
 
-/// The video resolution tiers with their horizontal canvas width and height.
+/// The video resolution tiers with their landscape canvas width and height.
+/// Portrait sources swap the width and height.
 pub(super) const VIDEO_RESOLUTIONS: [(u16, u32, u32); 12] = [
     (144, 256, 144),
     (240, 426, 240),
@@ -374,7 +375,10 @@ pub(super) fn validate_video(
     for variant in &media.variants {
         if !safe_id(&variant.id)
             || !h264_codec(&variant.codec)
-            || !VIDEO_RESOLUTIONS.contains(&(variant.resolution, variant.width, variant.height))
+            || !VIDEO_RESOLUTIONS.iter().any(|&(tier, width, height)| {
+                tier == variant.resolution
+                    && [(width, height), (height, width)].contains(&(variant.width, variant.height))
+            })
             || !VIDEO_FRAME_RATES.contains(&variant.fps)
             || variant.frame_rate.numerator == 0
             || variant.frame_rate.denominator == 0
