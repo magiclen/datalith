@@ -1089,12 +1089,17 @@ impl DatalithService {
         staged: StagedInput,
         cancel: Arc<AtomicBool>,
     ) -> Result<serde_json::Value, ServiceError> {
-        #[cfg(not(feature = "image-convert"))]
-        let _ = &recipe;
         let input = self.work_directory(id).join("input");
         if options.automatic() {
             self.processing_progress(id, "detecting", 0, 0).await?;
-            let kind = super::classification::detect(self, &input, &options, &cancel).await?;
+            let kind = super::classification::detect(
+                self,
+                &input,
+                &options,
+                &recipe.image_limits,
+                &cancel,
+            )
+            .await?;
             options.kind = match kind {
                 MediaKind::Image if options.enable_convert_to_image => kind,
                 MediaKind::Audio if options.enable_convert_to_audio => kind,

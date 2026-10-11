@@ -285,8 +285,10 @@ Native builds need Linux, Rust 1.94 or later, libmagic development files, and Im
 Image builds also need pkg-config and Clang.
 ImageMagick must have the `lcms` delegate, because image outputs convert embedded color profiles, such as Display P3, to sRGB; the service does not start without it.
 ImageMagick should also have the `heic`, `jxl`, `jp2`, `openexr`, `raw`, and `djvu` delegates for those formats; an image upload of a format without its delegate fails, and an automatic upload keeps it as a resource.
+ImageMagick also needs the `webpmux` library of libwebp, which reads and writes animated WebP; without it, uploads of animated images fail.
 Docker builds ImageMagick without librsvg and graphviz, because Datalith renders SVG itself and graphviz can read other files.
 LibRaw and DjVuLibre allocate memory outside the ImageMagick limits, so set a memory limit for the container when untrusted users can upload files.
+ImageMagick 7.1.2-28 or later lets readers such as GIF, TIFF, ICO, and HEIC stop at the frame limit while an upload is checked; older versions still reject such images, but may use more memory first.
 Audio/video processing needs external FFmpeg and ffprobe version 9 or later.
 Docker uses ImageMagick 7.1.2-32 with FFmpeg 9.0.2; older ImageMagick animation delegates may need an upgrade.
 Docker includes the tested tools; see [FFMPEG.md](../FFMPEG.md) for their build and source bundle.

@@ -2,14 +2,14 @@ use std::{
     collections::HashSet,
     ffi::{CStr, CString},
     fs::{self, File},
-    io::{Read, Seek, SeekFrom},
+    io::{BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{Mutex, OnceLock, PoisonError},
 };
 
 use image_convert::{
-    Crop, GIFConfig, ImageResource, JPGConfig, PNGConfig, WEBPConfig, compute_output_size,
-    fetch_magic_wand, identify_ping, identify_read,
+    Crop, GIFConfig, ImageIdentify, ImageResource, JPGConfig, MagickError, PNGConfig, WEBPConfig,
+    compute_output_size, fetch_magic_wand, identify_ping, identify_ping_frames, identify_read,
     magick_rust::{MagickWand, ResourceType, bindings},
     to_gif, to_jpg, to_png, to_webp,
 };
@@ -165,6 +165,24 @@ fn configure_policy() -> Result<(), String> {
     Ok(())
 }
 
+// ImageMagick checks the length of an image list when a reader sets the size of a frame, which also limits readers that cannot stop at a frame range, such as the JPEG XL reader.
+// The limit is global, so it only grows to fit the largest frame limit, and one extra frame lets the frame limit of Datalith report the image instead.
+fn raise_list_length(max_frames: u32) -> Result<(), ServiceError> {
+    // The first value is the limit which ImageMagick had before, such as one from the environment or the policy.
+    static LIMITS: Mutex<Option<(u64, u64)>> = Mutex::new(None);
+
+    let mut limits = LIMITS.lock().unwrap_or_else(PoisonError::into_inner);
+    let (initial, current) = *limits
+        .get_or_insert_with(|| (MagickWand::get_resource_limit(ResourceType::ListLength), 0));
+    let limit = initial.min(u64::from(max_frames) + 2);
+    if limit > current {
+        MagickWand::set_resource_limit(ResourceType::ListLength, limit)
+            .map_err(|error| ServiceError::Internal(error.to_string()))?;
+        *limits = Some((initial, limit));
+    }
+    Ok(())
+}
+
 pub(super) fn check_dimensions(
     width: u64,
     height: u64,
@@ -237,6 +255,86 @@ fn apng_frame_count(path: &Path) -> Result<Option<u32>, ServiceError> {
     }
 }
 
+// ImageMagick pings every frame of an animated WebP and cannot stop at a frame range, so check the canvas and the frame count from the container first.
+fn check_webp_animation(path: &Path, limits: &ImageLimits) -> Result<(), ServiceError> {
+    let mut file = BufReader::new(File::open(path)?);
+    let length = file.get_ref().metadata()?.len();
+    let mut header = [0; 30];
+    // The extended format starts with the VP8X chunk, whose flags mark an animation.
+    if file.read_exact(&mut header).is_err()
+        || &header[..4] != b"RIFF"
+        || &header[8..16] != b"WEBPVP8X"
+        || header[20] & 0x02 == 0
+    {
+        return Ok(());
+    }
+    // Like libwebp, accept a VP8X chunk which is longer than its 10 bytes of fields.
+    let vp8x = u32::from_le_bytes(header[16..20].try_into().unwrap());
+    if vp8x < 10 {
+        return Ok(());
+    }
+    let skip = i64::from(vp8x) + i64::from(vp8x % 2) - 10;
+    file.seek_relative(skip)?;
+    let mut offset = 30 + skip.unsigned_abs();
+    let end = (u64::from(u32::from_le_bytes(header[4..8].try_into().unwrap())) + 8).min(length);
+    let mut frames = 0;
+    // Each ANMF chunk holds one frame, and one more than the limit is enough to reject the image.
+    while offset + 8 <= end && frames <= u64::from(limits.max_frames) {
+        let mut chunk = [0; 8];
+        file.read_exact(&mut chunk)?;
+        if &chunk[..4] == b"ANMF" {
+            frames += 1;
+        }
+        let size = u32::from_le_bytes(chunk[4..].try_into().unwrap());
+        let skip = i64::from(size) + i64::from(size % 2);
+        file.seek_relative(skip)?;
+        offset += 8 + skip.unsigned_abs();
+    }
+    if frames > 0 {
+        // The canvas width and height are stored minus one in 24 bits.
+        let dimension =
+            |bytes: &[u8]| u64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0])) + 1;
+        check_dimensions(dimension(&header[24..27]), dimension(&header[27..30]), frames, limits)?;
+    }
+    Ok(())
+}
+
+// The largest total size of the color profiles which coalescing gives the frames of an animation.
+const MAX_ANIMATION_PROFILE_BYTES: u64 = 64 * 1024 * 1024;
+
+// Coalescing copies the profiles of a frame to the frames after it which have none.
+// Outputs only need the color profiles, so the other profiles are removed first, and the copies of the color profiles are limited.
+fn keep_color_profiles(wand: &MagickWand) -> Result<(), ServiceError> {
+    let mut current = 0;
+    let mut total = 0u64;
+    wand.reset_iterator();
+    while wand.next_image() {
+        wand.profile_image("!icc,!icm,*", None::<&[u8]>).map_err(image_error)?;
+        // The blob writer changes the iterator, so only the current frame is cloned.
+        let frame = MagickWand::new_from_image(&wand.get_image().map_err(image_error)?)
+            .map_err(image_error)?;
+        if let Ok(profile) = frame.write_image_blob("ICC") {
+            current = profile.len() as u64;
+        }
+        total = total.saturating_add(current);
+    }
+    wand.reset_iterator();
+    if total > MAX_ANIMATION_PROFILE_BYTES {
+        return Err(ServiceError::Invalid(
+            "The color profiles of the animation are too large.".into(),
+        ));
+    }
+    Ok(())
+}
+
+// Ping one frame more than the limit, which shows whether an image has too many frames.
+fn ping_frames(input: &ImageResource, limits: &ImageLimits) -> Result<ImageIdentify, MagickError> {
+    identify_ping_frames(
+        input,
+        usize::try_from(limits.max_frames).unwrap_or(usize::MAX).saturating_add(1),
+    )
+}
+
 // ImageMagick has no signature for these formats, and it only checks the major brand of HEIF files, so they need an explicit format.
 fn explicit_format(
     path: &Path,
@@ -264,6 +362,7 @@ fn image_resource(path: &Path, format: Option<&str>) -> Result<ImageResource, Se
 pub(super) fn identifiable(
     input: &Path,
     detected_mime: Option<&str>,
+    limits: &ImageLimits,
 ) -> Result<bool, ServiceError> {
     match reject_ghostscript_formats(input) {
         Ok(()) => (),
@@ -271,8 +370,10 @@ pub(super) fn identifiable(
         Err(error) => return Err(error),
     }
     configure_resources()?;
+    raise_list_length(limits.max_frames)?;
+    check_webp_animation(input, limits)?;
     let input = image_resource(input, explicit_format(input, detected_mime)?)?;
-    Ok(identify_ping(&input).is_ok())
+    Ok(ping_frames(&input, limits).is_ok())
 }
 
 /// Process an image file.
@@ -289,11 +390,13 @@ pub(super) fn process_image(
     interruption.check()?;
     reject_ghostscript_formats(input)?;
     configure_resources()?;
+    raise_list_length(limits.max_frames)?;
     let svg = super::svg::render(input, output_dir, limits, interruption)?;
     let source = svg.as_ref().map_or(input, |svg| svg.path.as_path());
     let format = if svg.is_some() { None } else { explicit_format(source, detected_mime)? };
+    check_webp_animation(source, limits)?;
     let input = image_resource(source, format)?;
-    let ping = identify_ping(&input).map_err(image_error)?;
+    let ping = ping_frames(&input, limits).map_err(image_error)?;
     // The resource path can start with a format, so read the file itself.
     let preflight_frames =
         apng_frame_count(source)?.map(u64::from).unwrap_or(ping.number_of_frames as u64);
@@ -357,6 +460,7 @@ pub(super) fn process_image(
     check_dimensions(max_width as u64, max_height as u64, u64::from(frame_count), limits)?;
     interruption.check()?;
     if animated {
+        keep_color_profiles(&wand)?;
         wand = wand.coalesce().map_err(image_error)?;
         wand.reset_iterator();
     }

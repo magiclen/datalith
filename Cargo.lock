@@ -1352,9 +1352,9 @@ dependencies = [
 
 [[package]]
 name = "image-convert"
-version = "0.24.0"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce6fb537776022362f26599e37d51dc95690fff4a7cecebf4fe6534a1db47f71"
+checksum = "85b00509f4ff9b62ac9910ba5c5db9c1ed612d9960476f1dd7d8fd70044691b2"
 dependencies = [
  "ico",
  "magick_rust",

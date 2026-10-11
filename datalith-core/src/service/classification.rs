@@ -5,12 +5,13 @@ use std::{
 
 use tokio::{fs::File, io::AsyncReadExt};
 
-use super::{DatalithService, MediaKind, ServiceError, UploadOptions};
+use super::{DatalithService, ImageLimits, MediaKind, ServiceError, UploadOptions};
 
 pub(super) async fn detect(
     service: &DatalithService,
     input: &Path,
     options: &UploadOptions,
+    limits: &ImageLimits,
     cancel: &AtomicBool,
 ) -> Result<MediaKind, ServiceError> {
     if cancel.load(Ordering::Acquire) {
@@ -26,6 +27,7 @@ pub(super) async fn detect(
         let input = input.to_path_buf();
         let detected = mime.as_ref().map(|mime| mime.essence_str().to_owned());
         let convert = options.enable_convert_to_image;
+        let limits = limits.clone();
         let image = tokio::task::spawn_blocking(move || {
             // resvg renders SVG files, and ImageMagick is not allowed to read them.
             if detected.as_deref() == Some("image/svg+xml") || super::svg::is_svg(&input)? {
@@ -35,7 +37,11 @@ pub(super) async fn detect(
             Ok::<_, ServiceError>(
                 image
                     && (!convert
-                        || super::image_processor::identifiable(&input, detected.as_deref())?),
+                        || super::image_processor::identifiable(
+                            &input,
+                            detected.as_deref(),
+                            &limits,
+                        )?),
             )
         })
         .await
@@ -54,7 +60,7 @@ pub(super) async fn detect(
     {
         return Ok(kind);
     }
-    let _ = (service, options);
+    let _ = (service, options, limits);
     Ok(match mime.as_ref().map(crate::mime::Mime::type_) {
         Some(crate::mime::AUDIO) => MediaKind::Audio,
         Some(crate::mime::VIDEO) => MediaKind::Video,

@@ -692,3 +692,91 @@ async fn gif_webp_and_apng_keep_animation_with_crops_and_fallbacks() {
     }
     service.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn animations_over_the_frame_limit_fail() {
+    use datalith_core::ImageLimits;
+
+    let directory = tempfile::tempdir().unwrap();
+    let service =
+        DatalithService::new(Datalith::new(directory.path()).await.unwrap(), ServiceConfig {
+            image_limits: ImageLimits {
+                max_frames: 3,
+                ..ImageLimits::default()
+            },
+            ..ServiceConfig::default()
+        })
+        .await
+        .unwrap();
+    let mut webp = ImageResource::Data(Vec::new());
+    to_webp(&mut webp, &ImageResource::Data(GIF.to_vec()), &WEBPConfig::default()).unwrap();
+    // Both animations have 4 frames, and an automatic upload must not keep them as resources.
+    for input in [GIF, webp.as_u8_slice().unwrap()] {
+        for options in [
+            UploadOptions {
+                kind: MediaKind::Image,
+                ..UploadOptions::default()
+            },
+            UploadOptions {
+                enable_convert_to_image: true,
+                ..UploadOptions::default()
+            },
+        ] {
+            let task = service.submit_upload(input, options, None).await.unwrap();
+            let done = finished(&service, task.id).await;
+            assert_eq!(TaskStatus::Failed, done.status);
+            assert_eq!("The image exceeds the pixel or frame limit.", done.error.unwrap().message);
+        }
+    }
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn animated_webp_applies_its_exif_orientation() {
+    use datalith_core::{ProcessingMethod, ProcessingMode};
+    use image_convert::magick_rust::OrientationType;
+
+    let directory = tempfile::tempdir().unwrap();
+    let service = DatalithService::new(
+        Datalith::new(directory.path()).await.unwrap(),
+        ServiceConfig::default(),
+    )
+    .await
+    .unwrap();
+    let mut decoded = None;
+    identify_read(&mut decoded, &ImageResource::Data(ORIENTED_JPEG.to_vec())).unwrap();
+    let exif = decoded.unwrap().write_image_blob("EXIF").unwrap();
+    // The EXIF orientation turns these 16x8 frames into 8x16 frames.
+    let mut frames = MagickWand::new();
+    for color in ["red", "blue"] {
+        let mut background = PixelWand::new();
+        background.set_color(color).unwrap();
+        let mut frame = MagickWand::new();
+        frame.new_image(16, 8, &background).unwrap();
+        frame.profile_image("exif", exif.as_slice()).unwrap();
+        frame.set_image_orientation(OrientationType::RightTop).unwrap();
+        frame.set_image_delay(10).unwrap();
+        frames.add_image(&frame).unwrap();
+    }
+    let mut webp = ImageResource::Data(Vec::new());
+    to_webp(&mut webp, &ImageResource::MagickWand(frames), &WEBPConfig {
+        strip_metadata: false,
+        respect_orientation: false,
+        ..WEBPConfig::default()
+    })
+    .unwrap();
+    for processing_mode in [ProcessingMode::Transcode, ProcessingMode::Trust] {
+        let media = upload(&service, webp.as_u8_slice().unwrap(), ImageOptions {
+            processing_mode,
+            ..ImageOptions::default()
+        })
+        .await;
+        assert!(media.animated);
+        assert_eq!(2, media.frame_count);
+        for variant in &media.variants {
+            assert_eq!((8, 16), (variant.width, variant.height), "{}", variant.format);
+            assert_eq!(ProcessingMethod::Transcoded, variant.processing_method);
+        }
+    }
+    service.close().await.unwrap();
+}
