@@ -1,5 +1,7 @@
 # Datalith
 
+[![CI](https://github.com/magiclen/datalith/actions/workflows/ci.yml/badge.svg)](https://github.com/magiclen/datalith/actions/workflows/ci.yml)
+
 Datalith is a small service for storing files and preparing media for websites.
 It supports Linux.
 It runs as one instance, with file contents on disk.
