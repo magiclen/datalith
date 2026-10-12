@@ -43,6 +43,14 @@ pub(crate) struct DatalithInner {
     _sql_file:                  std::fs::File,
 }
 
+impl Drop for DatalithInner {
+    fn drop(&mut self) {
+        // A child process can inherit this descriptor before exec, so closing our copy may leave the lock held.
+        // Release it explicitly when the last store handle or read guard is dropped.
+        let _ = self._sql_file.unlock();
+    }
+}
+
 /// A Datalith file store.
 #[derive(Clone)]
 pub struct Datalith(pub(crate) Arc<DatalithInner>);
@@ -466,5 +474,33 @@ impl Datalith {
             .execute(&mut **tx)
             .await?;
         Ok(removed.rows_affected() > 0)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn dropping_the_last_store_handle_releases_an_inherited_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let datalith = Datalith::new(directory.path()).await.unwrap();
+        // A duplicate shares the lock just like a child process does between fork and exec.
+        let inherited = datalith.0._sql_file.try_clone().unwrap();
+        let retained = datalith.clone();
+        datalith.close().await;
+        assert!(matches!(
+            Datalith::new(directory.path()).await,
+            Err(DatalithCreateError::AlreadyRun)
+        ));
+        drop(retained);
+
+        let reopened = Datalith::new(directory.path()).await.unwrap();
+        drop(inherited);
+        assert!(matches!(
+            Datalith::new(directory.path()).await,
+            Err(DatalithCreateError::AlreadyRun)
+        ));
+        reopened.close().await;
     }
 }
